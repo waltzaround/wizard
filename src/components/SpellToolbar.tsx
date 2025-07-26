@@ -8,7 +8,7 @@ export interface Spell {
   cooldown: number;
   description: string;
   color: string;
-  type: 'projectile' | 'area' | 'self' | 'utility';
+  type: "projectile" | "area" | "self" | "utility";
 }
 
 interface SpellToolbarProps {
@@ -18,55 +18,55 @@ interface SpellToolbarProps {
 
 const SPELLS: Spell[] = [
   {
-    id: 'fireball',
-    name: 'Fireball',
-    icon: '🔥',
+    id: "fireball",
+    name: "Fireball",
+    icon: "🔥",
     manaCost: 20,
     cooldown: 1000,
-    description: 'Launch a burning projectile',
-    color: '#FF4500',
-    type: 'projectile'
+    description: "Launch a burning projectile",
+    color: "#FF4500",
+    type: "projectile",
   },
   {
-    id: 'iceball',
-    name: 'Ice Shard',
-    icon: '❄️',
-    manaCost: 25,
-    cooldown: 1200,
-    description: 'Freeze enemies with ice magic',
-    color: '#00BFFF',
-    type: 'projectile'
+    id: "iceball",
+    name: "Artillery Strike",
+    icon: "💥",
+    manaCost: 40,
+    cooldown: 3000,
+    description: "Shotgun artillery barrage at closest enemy",
+    color: "#FF8C00",
+    type: "area",
   },
   {
-    id: 'lightning',
-    name: 'Lightning Bolt',
-    icon: '⚡',
+    id: "laser",
+    name: "Laser Sweep",
+    icon: "🔴", // You can change this to a better laser/beam emoji if you prefer
     manaCost: 35,
     cooldown: 2000,
-    description: 'Strike with electric fury',
-    color: '#FFD700',
-    type: 'projectile'
+    description: "Unleash a massive laser beam that sweeps a 90° arc",
+    color: "#FF0000",
+    type: "projectile",
   },
   {
-    id: 'heal',
-    name: 'Heal',
-    icon: '💚',
+    id: "heal",
+    name: "Heal",
+    icon: "💚",
     manaCost: 30,
     cooldown: 3000,
-    description: 'Restore health over time',
-    color: '#32CD32',
-    type: 'self'
+    description: "Restore health over time",
+    color: "#32CD32",
+    type: "self",
   },
   {
-    id: 'teleport',
-    name: 'Teleport',
-    icon: '✨',
+    id: "teleport",
+    name: "Teleport",
+    icon: "✨",
     manaCost: 40,
     cooldown: 5000,
-    description: 'Instantly move forward',
-    color: '#9370DB',
-    type: 'utility'
-  }
+    description: "Instantly move forward",
+    color: "#9370DB",
+    type: "utility",
+  },
 ];
 
 export function SpellToolbar({ onSpellCast, isConnected }: SpellToolbarProps) {
@@ -76,11 +76,11 @@ export function SpellToolbar({ onSpellCast, isConnected }: SpellToolbarProps) {
   const castSelectedSpell = useCallback(() => {
     const spell = SPELLS[selectedSpell];
     if (!spell || !isConnected) return;
-    
+
     const currentCooldown = cooldowns[spell.id] || 0;
     if (currentCooldown <= 0) {
       onSpellCast(spell);
-      setCooldowns(prev => ({ ...prev, [spell.id]: spell.cooldown }));
+      setCooldowns((prev) => ({ ...prev, [spell.id]: spell.cooldown }));
     }
   }, [selectedSpell, isConnected, cooldowns, onSpellCast]);
 
@@ -88,46 +88,44 @@ export function SpellToolbar({ onSpellCast, isConnected }: SpellToolbarProps) {
   useEffect(() => {
     const handleKeyPress = (event: KeyboardEvent) => {
       const key = event.key;
-      if (key >= '1' && key <= '5') {
+      if (key >= "1" && key <= "5") {
         const spellIndex = parseInt(key) - 1;
         if (spellIndex < SPELLS.length) {
           setSelectedSpell(spellIndex);
         }
       }
-      
+
       // Cast selected spell with Space or Enter
-      if ((key === ' ' || key === 'Enter') && isConnected) {
+      if ((key === " " || key === "Enter") && isConnected) {
         event.preventDefault();
         castSelectedSpell();
       }
     };
 
-    window.addEventListener('keydown', handleKeyPress);
-    return () => window.removeEventListener('keydown', handleKeyPress);
+    window.addEventListener("keydown", handleKeyPress);
+    return () => window.removeEventListener("keydown", handleKeyPress);
   }, [castSelectedSpell, isConnected]);
 
   // Update cooldowns
   useEffect(() => {
     const interval = setInterval(() => {
-      setCooldowns(prev => {
+      setCooldowns((prev) => {
         const updated = { ...prev };
         let hasChanges = false;
-        
-        Object.keys(updated).forEach(spellId => {
+
+        Object.keys(updated).forEach((spellId) => {
           if (updated[spellId] > 0) {
             updated[spellId] = Math.max(0, updated[spellId] - 100);
             hasChanges = true;
           }
         });
-        
+
         return hasChanges ? updated : prev;
       });
     }, 100);
 
     return () => clearInterval(interval);
   }, []);
-
-
 
   const handleSpellClick = (index: number) => {
     setSelectedSpell(index);
@@ -155,42 +153,45 @@ export function SpellToolbar({ onSpellCast, isConnected }: SpellToolbarProps) {
             const isSelected = index === selectedSpell;
             const canCast = canCastSpell(spell);
             const cooldownPercent = getCooldownPercent(spell);
-            
+
             return (
               <div
                 key={spell.id}
                 className={`relative w-16 h-16 rounded-lg border-2 cursor-pointer transition-all duration-200 ${
-                  isSelected 
-                    ? 'border-white bg-white/20 scale-110' 
-                    : 'border-gray-500 bg-gray-800/50 hover:border-gray-400 hover:bg-gray-700/50'
-                } ${!canCast ? 'opacity-50' : ''}`}
+                  isSelected
+                    ? "border-white bg-white/20 scale-110"
+                    : "border-gray-500 bg-gray-800/50 hover:border-gray-400 hover:bg-gray-700/50"
+                } ${!canCast ? "opacity-50" : ""}`}
                 onClick={() => handleSpellClick(index)}
                 title={`${spell.name} - ${spell.description}`}
               >
                 {/* Spell Icon */}
                 <div className="absolute inset-0 flex items-center justify-center">
-                  <span className="text-2xl" style={{ filter: canCast ? 'none' : 'grayscale(100%)' }}>
+                  <span
+                    className="text-2xl"
+                    style={{ filter: canCast ? "none" : "grayscale(100%)" }}
+                  >
                     {spell.icon}
                   </span>
                 </div>
-                
+
                 {/* Number indicator */}
                 <div className="absolute top-0 left-0 bg-black/70 text-white text-xs px-1 rounded-br">
                   {index + 1}
                 </div>
-                
 
-                
                 {/* Cooldown overlay */}
                 {cooldownPercent > 0 && (
-                  <div 
+                  <div
                     className="absolute inset-0 bg-black/60 rounded-lg transition-all duration-100"
                     style={{
-                      clipPath: `polygon(0 ${100 - cooldownPercent}%, 100% ${100 - cooldownPercent}%, 100% 100%, 0% 100%)`
+                      clipPath: `polygon(0 ${100 - cooldownPercent}%, 100% ${
+                        100 - cooldownPercent
+                      }%, 100% 100%, 0% 100%)`,
                     }}
                   />
                 )}
-                
+
                 {/* Cooldown timer */}
                 {cooldownPercent > 0 && (
                   <div className="absolute inset-0 flex items-center justify-center">
@@ -199,14 +200,14 @@ export function SpellToolbar({ onSpellCast, isConnected }: SpellToolbarProps) {
                     </span>
                   </div>
                 )}
-                
+
                 {/* Selection glow */}
                 {isSelected && (
-                  <div 
+                  <div
                     className="absolute inset-0 rounded-lg animate-pulse"
                     style={{
                       boxShadow: `0 0 20px ${spell.color}`,
-                      border: `2px solid ${spell.color}`
+                      border: `2px solid ${spell.color}`,
                     }}
                   />
                 )}
@@ -214,7 +215,7 @@ export function SpellToolbar({ onSpellCast, isConnected }: SpellToolbarProps) {
             );
           })}
         </div>
-        
+
         {/* Selected spell info */}
         <div className="mt-2 text-center">
           <div className="text-white text-sm font-semibold">

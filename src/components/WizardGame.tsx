@@ -24,38 +24,465 @@ interface WizardGameProps {
   onExitGame: () => void;
 }
 
+// Helper functions moved outside component for proper scoping
+function createWizard(): THREE.Group {
+  const wizard = new THREE.Group();
+
+  // Body (cylinder)
+  const bodyGeometry = new THREE.CylinderGeometry(0.8, 1.2, 2.5, 8);
+  const bodyMaterial = new THREE.MeshLambertMaterial({ color: 0x4169e1 }); // Royal blue
+  const body = new THREE.Mesh(bodyGeometry, bodyMaterial);
+  body.position.y = 1.25;
+  body.castShadow = true;
+  wizard.add(body);
+
+  // Head (sphere)
+  const headGeometry = new THREE.SphereGeometry(0.6, 8, 6);
+  const headMaterial = new THREE.MeshLambertMaterial({ color: 0xffdbac }); // Skin color
+  const head = new THREE.Mesh(headGeometry, headMaterial);
+  head.position.y = 3.1;
+  head.castShadow = true;
+  wizard.add(head);
+
+  // Hat (cone)
+  const hatGeometry = new THREE.ConeGeometry(0.7, 1.5, 8);
+  const hatMaterial = new THREE.MeshLambertMaterial({ color: 0x800080 }); // Purple
+  const hat = new THREE.Mesh(hatGeometry, hatMaterial);
+  hat.position.y = 4.3;
+  hat.castShadow = true;
+  wizard.add(hat);
+
+  // Staff (cylinder)
+  const staffGeometry = new THREE.CylinderGeometry(0.05, 0.05, 3, 8);
+  const staffMaterial = new THREE.MeshLambertMaterial({ color: 0x8b4513 }); // Brown
+  const staff = new THREE.Mesh(staffGeometry, staffMaterial);
+  staff.position.set(1.8, 2.5, 0);
+  staff.castShadow = true;
+  wizard.add(staff);
+
+  // Staff orb
+  const orbGeometry = new THREE.SphereGeometry(0.3, 8, 6);
+  const orbMaterial = new THREE.MeshLambertMaterial({
+    color: 0x00ffff,
+    emissive: 0x004444,
+  });
+  const orb = new THREE.Mesh(orbGeometry, orbMaterial);
+  orb.position.set(1.8, 4, 0);
+  orb.castShadow = true;
+  wizard.add(orb);
+
+  return wizard;
+}
+
+function updateGame(gameState: GameState) {
+  const { wizard, keys, camera, cameraOffset } = gameState;
+  const moveSpeed = 0.1;
+
+  // Calculate camera's forward direction (projected onto the ground plane)
+  const cameraDirection = new THREE.Vector3();
+  camera.getWorldDirection(cameraDirection);
+  cameraDirection.y = 0; // Remove vertical component
+  cameraDirection.normalize();
+
+  // Calculate camera's right direction
+  const cameraRight = new THREE.Vector3();
+  cameraRight.crossVectors(cameraDirection, new THREE.Vector3(0, 1, 0));
+  cameraRight.normalize();
+
+  // Movement vector
+  const moveVector = new THREE.Vector3(0, 0, 0);
+  let isMoving = false;
+
+  // WASD movement relative to camera direction
+  if (keys["KeyW"]) {
+    moveVector.add(cameraDirection.clone().multiplyScalar(moveSpeed));
+    isMoving = true;
+  }
+  if (keys["KeyS"]) {
+    moveVector.add(cameraDirection.clone().multiplyScalar(-moveSpeed));
+    isMoving = true;
+  }
+  if (keys["KeyA"]) {
+    moveVector.add(cameraRight.clone().multiplyScalar(-moveSpeed));
+    isMoving = true;
+  }
+  if (keys["KeyD"]) {
+    moveVector.add(cameraRight.clone().multiplyScalar(moveSpeed));
+    isMoving = true;
+  }
+
+  // Apply movement
+  if (isMoving) {
+    wizard.position.add(moveVector);
+  }
+
+  // Make wizard always face camera direction
+  wizard.lookAt(
+    wizard.position.x + cameraDirection.x,
+    wizard.position.y,
+    wizard.position.z + cameraDirection.z
+  );
+
+  // Update camera to follow wizard smoothly
+  const targetPosition = wizard.position.clone().add(cameraOffset);
+  camera.position.lerp(targetPosition, 0.1);
+
+  // Always look at wizard (this handles both movement and mouse rotation)
+  camera.lookAt(wizard.position);
+
+  // Staff orb animation removed to avoid confusion with projectiles
+}
+
+function updateMultiplayerObjects(gameState: GameState) {
+  // Send player position update to server
+  if (socketClient.getIsConnected() && gameState.playerId) {
+    const position = {
+      x: gameState.wizard.position.x,
+      y: gameState.wizard.position.y,
+      z: gameState.wizard.position.z,
+    };
+
+    const rotation = {
+      x: gameState.wizard.rotation.x,
+      y: gameState.wizard.rotation.y,
+      z: gameState.wizard.rotation.z,
+    };
+
+    socketClient.updatePlayer(position, rotation);
+  }
+}
+
+function updateProjectiles(
+  gameState: GameState,
+  projectileUpdates: Projectile[]
+) {
+  for (const update of projectileUpdates) {
+    const projectileGroup = gameState.projectiles.get(update.id);
+    if (projectileGroup) {
+      // Debug logging for artillery shells
+      if (update.type === "iceball") {
+        console.log(
+          `🔥 Artillery shell ${update.id}: exploded=${
+            update.exploded
+          }, hasExploded=${
+            projectileGroup.userData.hasExploded
+          }, pos=[${update.position.x.toFixed(1)}, ${update.position.y.toFixed(
+            1
+          )}, ${update.position.z.toFixed(1)}]`
+        );
+      }
+
+      // Check if artillery shell exploded
+      if (
+        update.type === "iceball" &&
+        update.exploded &&
+        !projectileGroup.userData.hasExploded
+      ) {
+        console.log(
+          `💥 EXPLOSION TRIGGERED! Creating explosion effect for artillery shell ${update.id} at position:`,
+          update.position
+        );
+        createExplosionEffect(gameState, update.position);
+        projectileGroup.userData.hasExploded = true;
+        // Don't update position after explosion
+        continue;
+      }
+
+      // Smooth interpolation for better visual feedback
+      const targetPos = update.position;
+
+      // Lerp position for smooth movement
+      const lerpFactor = 0.3;
+      projectileGroup.position.lerp(
+        new THREE.Vector3(targetPos.x, targetPos.y, targetPos.z),
+        lerpFactor
+      );
+
+      // Simple rotation effects based on type
+      if (update.type === "fireball") {
+        // Fireball rotation and flame particle animation
+        projectileGroup.rotation.y += 0.1;
+
+        // Animate flame particles if they exist
+        const time = Date.now() * 0.01;
+        projectileGroup.children.forEach((child, index) => {
+          if (index > 0) {
+            // Skip the main fireball mesh (index 0)
+            const flameParticle = child as THREE.Mesh;
+            // Make particles flicker and move slightly
+            const material = flameParticle.material as THREE.MeshBasicMaterial;
+            material.opacity = 0.6 + Math.sin(time + index) * 0.3;
+
+            // Small random movement for flame effect
+            const baseAngle = (index / 8) * Math.PI * 2;
+            const radius = 0.3 + Math.sin(time * 2 + index) * 0.1;
+            flameParticle.position.x = Math.cos(baseAngle) * radius;
+            flameParticle.position.z = Math.sin(baseAngle) * radius;
+            flameParticle.position.y = Math.sin(baseAngle * 0.5 + time) * 0.2;
+          }
+        });
+      } else if (update.type === "iceball") {
+        // Artillery shells - no rotation effects, just follow ballistic trajectory
+        // Let the server-side physics handle the movement
+      } else if (update.type === "laser") {
+        // Laser beam: big glowing cylinder that sweeps a 180-degree arc
+        let laserMesh = projectileGroup.getObjectByName("laserBeam");
+        if (!laserMesh) {
+          // Create the glowing horizontal cylinder
+          const geometry = new THREE.CylinderGeometry(3, 3, 20, 32, 1, true);
+          const material = new THREE.MeshBasicMaterial({
+            color: 0xff0000,
+            transparent: true,
+            opacity: 0.5,
+            side: THREE.DoubleSide,
+            depthWrite: false,
+          });
+          laserMesh = new THREE.Mesh(geometry, material);
+          laserMesh.name = "laserBeam";
+          // Make the cylinder horizontal (rotate around Z)
+          laserMesh.rotation.z = Math.PI / 2;
+          // Place the base of the cylinder at the wizard: center at (0, 3, 0), then offset along local X by half length
+          laserMesh.position.set(10, 3, 0); // 10 units along local X (after rotation)
+          projectileGroup.add(laserMesh);
+        }
+        // Animate sweep: always left-to-right relative to facing direction
+        const laserUpdate = update as any;
+        if (typeof laserUpdate.sweepProgress === "number") {
+          const baseRotation = Math.atan2(
+            update.direction.z,
+            update.direction.x
+          );
+          const sweepRadians =
+            ((90 - 180 * laserUpdate.sweepProgress) * Math.PI) / 180;
+          projectileGroup.rotation.y = baseRotation + sweepRadians;
+        }
+        // Optionally, add a pulsing effect
+        const time = Date.now() * 0.004;
+        (
+          (laserMesh as THREE.Mesh).material as THREE.MeshBasicMaterial
+        ).opacity = 0.5 + 0.2 * Math.sin(time);
+      } else {
+        // Default rotation
+        projectileGroup.rotation.x += 0.15;
+        projectileGroup.rotation.y += 0.15;
+      }
+
+      // Update user data
+      projectileGroup.userData.targetId = update.targetId;
+      projectileGroup.userData.lastPosition = { ...update.position };
+      projectileGroup.userData.lastUpdate = Date.now();
+    }
+  }
+}
+
+// Add this type above updateProjectiles
+interface LaserProjectile extends Projectile {
+  sweepAngle: number;
+}
+
+// Create explosion effect for artillery shells
+function createExplosionEffect(
+  gameState: GameState,
+  position: { x: number; y: number; z: number }
+) {
+  console.log(
+    `💥 Creating spectacular explosion effect at [${position.x.toFixed(
+      1
+    )}, ${position.y.toFixed(1)}, ${position.z.toFixed(1)}]`
+  );
+
+  // Create explosion particles - more particles for bigger explosion
+  const particleCount = 40; // Doubled from 20
+  const explosionGroup = new THREE.Group();
+
+  // Create main explosion flash
+  const flashGeometry = new THREE.SphereGeometry(3, 16, 12);
+  const flashMaterial = new THREE.MeshBasicMaterial({
+    color: 0xffffff,
+    transparent: true,
+    opacity: 0.9,
+  });
+  const flash = new THREE.Mesh(flashGeometry, flashMaterial);
+  flash.position.set(position.x, position.y, position.z);
+  explosionGroup.add(flash);
+
+  // Create shockwave ring
+  const shockwaveGeometry = new THREE.RingGeometry(0.5, 8, 32);
+  const shockwaveMaterial = new THREE.MeshBasicMaterial({
+    color: 0xff6600,
+    transparent: true,
+    opacity: 0.6,
+    side: THREE.DoubleSide,
+  });
+  const shockwave = new THREE.Mesh(shockwaveGeometry, shockwaveMaterial);
+  shockwave.position.set(position.x, position.y + 0.1, position.z);
+  shockwave.rotation.x = -Math.PI / 2;
+  explosionGroup.add(shockwave);
+
+  for (let i = 0; i < particleCount; i++) {
+    // Create particle geometry and material with more variety
+    const particleSize = 0.15 + Math.random() * 0.35; // Larger particles
+    const particleGeometry = new THREE.SphereGeometry(particleSize, 8, 6);
+
+    // More varied colors for realistic explosion
+    let particleColor;
+    const colorRand = Math.random();
+    if (colorRand < 0.3) {
+      particleColor = 0xff0000; // Red
+    } else if (colorRand < 0.6) {
+      particleColor = 0xff4500; // Orange red
+    } else if (colorRand < 0.8) {
+      particleColor = 0xff8c00; // Dark orange
+    } else {
+      particleColor = 0xffd700; // Gold
+    }
+
+    const particleMaterial = new THREE.MeshBasicMaterial({
+      color: particleColor,
+      transparent: true,
+      opacity: 0.9,
+    });
+
+    const particle = new THREE.Mesh(particleGeometry, particleMaterial);
+
+    // Position particle at explosion center
+    particle.position.set(position.x, position.y, position.z);
+
+    // More dramatic velocity for bigger explosion
+    const velocity = {
+      x: (Math.random() - 0.5) * 15, // Increased from 10
+      y: Math.random() * 12 + 3, // Increased upward velocity
+      z: (Math.random() - 0.5) * 15, // Increased from 10
+    };
+
+    // Store velocity in userData for animation
+    particle.userData = { velocity, startTime: Date.now() };
+
+    explosionGroup.add(particle);
+  }
+
+  // Add explosion group to scene
+  gameState.scene.add(explosionGroup);
+
+  // Store explosion start time
+  const explosionStartTime = Date.now();
+
+  // Animate explosion particles with enhanced effects
+  const animateExplosion = () => {
+    const currentTime = Date.now();
+    const explosionElapsed = (currentTime - explosionStartTime) / 1000;
+    let activeParticles = 0;
+
+    explosionGroup.children.forEach((particle, index) => {
+      const mesh = particle as THREE.Mesh;
+
+      // Handle flash effect (first child)
+      if (index === 0) {
+        if (explosionElapsed < 0.2) {
+          activeParticles++;
+          const progress = explosionElapsed / 0.2;
+          const material = mesh.material as THREE.MeshBasicMaterial;
+          material.opacity = 0.9 * (1 - progress);
+          mesh.scale.setScalar(1 + progress * 2); // Expand quickly
+        }
+        return;
+      }
+
+      // Handle shockwave effect (second child)
+      if (index === 1) {
+        if (explosionElapsed < 1.0) {
+          activeParticles++;
+          const progress = explosionElapsed / 1.0;
+          const material = mesh.material as THREE.MeshBasicMaterial;
+          material.opacity = 0.6 * (1 - progress);
+          mesh.scale.setScalar(1 + progress * 3); // Expand shockwave
+        }
+        return;
+      }
+
+      // Handle regular particles
+      if (mesh.userData && mesh.userData.startTime) {
+        const elapsed = (currentTime - mesh.userData.startTime) / 1000;
+        const maxLifetime = 3; // Longer lifetime for more dramatic effect
+
+        if (elapsed < maxLifetime) {
+          activeParticles++;
+
+          // Update particle position
+          const velocity = mesh.userData.velocity;
+          const deltaTime = 0.016; // ~60fps
+
+          mesh.position.x += velocity.x * deltaTime;
+          mesh.position.y += velocity.y * deltaTime;
+          mesh.position.z += velocity.z * deltaTime;
+
+          // Apply gravity
+          velocity.y -= 9.8 * deltaTime;
+
+          // Fade out over time with more dramatic curve
+          const progress = elapsed / maxLifetime;
+          const material = mesh.material as THREE.MeshBasicMaterial;
+          material.opacity = 0.9 * Math.pow(1 - progress, 2); // Quadratic fade
+
+          // Scale down over time
+          const scale = 1 - progress * 0.7; // More dramatic scaling
+          mesh.scale.setScalar(Math.max(0.1, scale));
+        }
+      }
+    });
+
+    // Continue animation if particles are still active
+    if (activeParticles > 0) {
+      requestAnimationFrame(animateExplosion);
+    } else {
+      // Clean up explosion
+      gameState.scene.remove(explosionGroup);
+      explosionGroup.children.forEach((particle) => {
+        const mesh = particle as THREE.Mesh;
+        mesh.geometry.dispose();
+        (mesh.material as THREE.Material).dispose();
+      });
+    }
+  };
+
+  // Start explosion animation
+  animateExplosion();
+}
+
 export function WizardGame({ username, onExitGame }: WizardGameProps) {
   // Store username for potential multiplayer use
   console.log(`Player ${username} entered the game`);
-  
+
   // Multiplayer state
   const [isConnected, setIsConnected] = useState(false);
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [playerStats, setPlayerStats] = useState({ health: 100, mana: 100 });
+  const [showDeathScreen, setShowDeathScreen] = useState(false);
+  const [deathMessage, setDeathMessage] = useState("");
   const mountRef = useRef<HTMLDivElement>(null);
   const gameStateRef = useRef<GameState | null>(null);
-  const animationIdRef = useRef<number | undefined>();
+  const animationIdRef = useRef<number | undefined>(undefined);
   const isInitializedRef = useRef<boolean>(false);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
 
   useEffect(() => {
     if (!mountRef.current) return;
-    
+
     // Prevent duplicate initialization
     if (isInitializedRef.current) {
       return;
     }
-    
+
     isInitializedRef.current = true;
-    
+
     // Store mount element reference to avoid React conflicts
     const mountElement = mountRef.current;
 
     // Initialize Three.js scene
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x87CEEB); // Sky blue background
-    
+    scene.background = new THREE.Color(0x87ceeb); // Sky blue background
+
     // Create camera
     const camera = new THREE.PerspectiveCamera(
       75,
@@ -63,13 +490,13 @@ export function WizardGame({ username, onExitGame }: WizardGameProps) {
       0.1,
       1000
     );
-    
+
     // Create renderer
     const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-    
+
     // Append canvas safely
     if (mountElement && !mountElement.contains(renderer.domElement)) {
       mountElement.appendChild(renderer.domElement);
@@ -88,7 +515,7 @@ export function WizardGame({ username, onExitGame }: WizardGameProps) {
 
     // Create ground plane with grid
     const groundGeometry = new THREE.PlaneGeometry(100, 100);
-    const groundMaterial = new THREE.MeshLambertMaterial({ color: 0x90EE90 });
+    const groundMaterial = new THREE.MeshLambertMaterial({ color: 0x90ee90 });
     const ground = new THREE.Mesh(groundGeometry, groundMaterial);
     ground.rotation.x = -Math.PI / 2;
     ground.receiveShadow = true;
@@ -100,32 +527,36 @@ export function WizardGame({ username, onExitGame }: WizardGameProps) {
       const gridSize = 50;
       const gridStep = 2;
       const gridColor = 0x333333;
-      
-      const material = new THREE.LineBasicMaterial({ color: gridColor, opacity: 0.7, transparent: true });
-      
+
+      const material = new THREE.LineBasicMaterial({
+        color: gridColor,
+        opacity: 0.7,
+        transparent: true,
+      });
+
       // Create horizontal lines
       for (let i = -gridSize; i <= gridSize; i += gridStep) {
         const geometry = new THREE.BufferGeometry().setFromPoints([
           new THREE.Vector3(-gridSize, 0.02, i),
-          new THREE.Vector3(gridSize, 0.02, i)
+          new THREE.Vector3(gridSize, 0.02, i),
         ]);
         const line = new THREE.Line(geometry, material);
         gridGroup.add(line);
       }
-      
+
       // Create vertical lines
       for (let i = -gridSize; i <= gridSize; i += gridStep) {
         const geometry = new THREE.BufferGeometry().setFromPoints([
           new THREE.Vector3(i, 0.02, -gridSize),
-          new THREE.Vector3(i, 0.02, gridSize)
+          new THREE.Vector3(i, 0.02, gridSize),
         ]);
         const line = new THREE.Line(geometry, material);
         gridGroup.add(line);
       }
-      
+
       return gridGroup;
     };
-    
+
     const grid = createGrid();
     scene.add(grid);
 
@@ -154,21 +585,21 @@ export function WizardGame({ username, onExitGame }: WizardGameProps) {
       otherPlayers: new Map(),
       projectiles: new Map(),
       playerHealth: 100,
-      playerMana: 100
+      playerMana: 100,
     };
-    
+
     // Store camera angles in gameState so they can be accessed in updateGame
-    Object.defineProperty(gameState, 'getCameraAngles', {
+    Object.defineProperty(gameState, "getCameraAngles", {
       value: () => ({ x: cameraAngleX, y: cameraAngleY }),
-      writable: false
+      writable: false,
     });
-    
-    Object.defineProperty(gameState, 'setCameraAngles', {
+
+    Object.defineProperty(gameState, "setCameraAngles", {
       value: (x: number, y: number) => {
         cameraAngleX = x;
         cameraAngleY = y;
       },
-      writable: false
+      writable: false,
     });
     gameStateRef.current = gameState;
 
@@ -177,10 +608,10 @@ export function WizardGame({ username, onExitGame }: WizardGameProps) {
 
     // Event listeners for keyboard input
     const handleKeyDown = (event: KeyboardEvent) => {
-     // console.log('Key down:', event.code);
-      
+      // console.log('Key down:', event.code);
+
       // Handle ESC key to exit game
-      if (event.code === 'Escape') {
+      if (event.code === "Escape") {
         // Exit pointer lock first if active
         if (document.pointerLockElement === renderer.domElement) {
           document.exitPointerLock();
@@ -190,15 +621,28 @@ export function WizardGame({ username, onExitGame }: WizardGameProps) {
         }
         return;
       }
-      
+
+      // Test explosion effect with 'E' key
+      if (event.code === "KeyE") {
+        console.log("🧪 Testing explosion effect at wizard position");
+        const testPosition = {
+          x: gameState.wizard.position.x + 5,
+          y: gameState.wizard.position.y + 2,
+          z: gameState.wizard.position.z,
+        };
+        createExplosionEffect(gameState, testPosition);
+        event.preventDefault();
+        return;
+      }
+
       // Note: Spell casting is now handled by SpellToolbar component
-      
+
       keys[event.code] = true;
       event.preventDefault();
     };
 
     const handleKeyUp = (event: KeyboardEvent) => {
-     // console.log('Key up:', event.code);
+      // console.log('Key up:', event.code);
       keys[event.code] = false;
       event.preventDefault();
     };
@@ -223,22 +667,27 @@ export function WizardGame({ username, onExitGame }: WizardGameProps) {
 
     const handleMouseMove = (event: MouseEvent) => {
       if (!isPointerLocked) return;
-      
+
       const sensitivity = 0.002;
       const deltaX = event.movementX * sensitivity;
       const deltaY = event.movementY * sensitivity;
-      
+
       cameraAngleY -= deltaX;
       cameraAngleX -= deltaY;
-      
+
       // Limit vertical rotation
-      cameraAngleX = Math.max(-Math.PI / 3, Math.min(Math.PI / 3, cameraAngleX));
-      
+      cameraAngleX = Math.max(
+        -Math.PI / 3,
+        Math.min(Math.PI / 3, cameraAngleX)
+      );
+
       // Apply rotation to camera offset using the tracked distance
-      cameraOffset.x = Math.sin(cameraAngleY) * Math.cos(cameraAngleX) * cameraDistance;
+      cameraOffset.x =
+        Math.sin(cameraAngleY) * Math.cos(cameraAngleX) * cameraDistance;
       cameraOffset.y = Math.sin(cameraAngleX) * cameraDistance + 5; // Keep some base height
-      cameraOffset.z = Math.cos(cameraAngleY) * Math.cos(cameraAngleX) * cameraDistance;
-      
+      cameraOffset.z =
+        Math.cos(cameraAngleY) * Math.cos(cameraAngleX) * cameraDistance;
+
       event.preventDefault();
     };
 
@@ -251,14 +700,14 @@ export function WizardGame({ username, onExitGame }: WizardGameProps) {
     // Scroll wheel zoom control
     const handleWheel = (event: WheelEvent) => {
       event.preventDefault();
-      
+
       const zoomSpeed = 0.5;
       const minDistance = 3;
       const maxDistance = 20;
-      
+
       // Adjust tracked distance based on scroll direction
       const deltaY = event.deltaY;
-      
+
       if (deltaY > 0) {
         // Scroll down - zoom out
         cameraDistance = Math.min(maxDistance, cameraDistance + zoomSpeed);
@@ -266,25 +715,31 @@ export function WizardGame({ username, onExitGame }: WizardGameProps) {
         // Scroll up - zoom in
         cameraDistance = Math.max(minDistance, cameraDistance - zoomSpeed);
       }
-      
+
       // Update camera offset using current angles and new distance
-      cameraOffset.x = Math.sin(cameraAngleY) * Math.cos(cameraAngleX) * cameraDistance;
+      cameraOffset.x =
+        Math.sin(cameraAngleY) * Math.cos(cameraAngleX) * cameraDistance;
       cameraOffset.y = Math.sin(cameraAngleX) * cameraDistance + 5;
-      cameraOffset.z = Math.cos(cameraAngleY) * Math.cos(cameraAngleX) * cameraDistance;
+      cameraOffset.z =
+        Math.cos(cameraAngleY) * Math.cos(cameraAngleX) * cameraDistance;
     };
 
     // Add event listeners
-    window.addEventListener('keydown', handleKeyDown);
-    window.addEventListener('keyup', handleKeyUp);
-    window.addEventListener('resize', handleResize);
-    document.addEventListener('pointerlockchange', handlePointerLockChange);
-    renderer.domElement.addEventListener('mousedown', handleMouseDown);
-    renderer.domElement.addEventListener('mousemove', handleMouseMove);
-    renderer.domElement.addEventListener('wheel', handleWheel, { passive: false });
-    
+    window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("keyup", handleKeyUp);
+    window.addEventListener("resize", handleResize);
+    document.addEventListener("pointerlockchange", handlePointerLockChange);
+    renderer.domElement.addEventListener("mousedown", handleMouseDown);
+    renderer.domElement.addEventListener("mousemove", handleMouseMove);
+    renderer.domElement.addEventListener("wheel", handleWheel, {
+      passive: false,
+    });
+
     // Prevent context menu on right click
-    renderer.domElement.addEventListener('contextmenu', (e) => e.preventDefault());
-    
+    renderer.domElement.addEventListener("contextmenu", (e) =>
+      e.preventDefault()
+    );
+
     // Make sure the canvas can receive focus for keyboard events
     renderer.domElement.tabIndex = 0;
     renderer.domElement.focus();
@@ -301,41 +756,50 @@ export function WizardGame({ username, onExitGame }: WizardGameProps) {
     // Store refs for cleanup
     rendererRef.current = renderer;
     sceneRef.current = scene;
-    
+
     // Cleanup function
     return () => {
       isInitializedRef.current = false;
-      
+
       if (animationIdRef.current) {
         cancelAnimationFrame(animationIdRef.current);
       }
       animationIdRef.current = undefined;
-      
+
       // Remove event listeners
-      window.removeEventListener('keydown', handleKeyDown);
-      window.removeEventListener('keyup', handleKeyUp);
-      window.removeEventListener('resize', handleResize);
-      
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("keyup", handleKeyUp);
+      window.removeEventListener("resize", handleResize);
+
       const currentRenderer = rendererRef.current;
       if (currentRenderer?.domElement) {
-        currentRenderer.domElement.removeEventListener('mousedown', handleMouseDown);
-        currentRenderer.domElement.removeEventListener('mousemove', handleMouseMove);
-        currentRenderer.domElement.removeEventListener('wheel', handleWheel);
+        currentRenderer.domElement.removeEventListener(
+          "mousedown",
+          handleMouseDown
+        );
+        currentRenderer.domElement.removeEventListener(
+          "mousemove",
+          handleMouseMove
+        );
+        currentRenderer.domElement.removeEventListener("wheel", handleWheel);
       }
-      document.removeEventListener('pointerlockchange', handlePointerLockChange);
-      
+      document.removeEventListener(
+        "pointerlockchange",
+        handlePointerLockChange
+      );
+
       // Exit pointer lock if active
       if (document.pointerLockElement === currentRenderer?.domElement) {
         try {
           document.exitPointerLock();
         } catch (error) {
-          console.warn('Pointer lock exit warning:', error);
+          console.warn("Pointer lock exit warning:", error);
         }
       }
-      
+
       // Clear game state reference
       gameStateRef.current = null;
-      
+
       // Remove canvas safely
       if (mountElement && currentRenderer?.domElement) {
         try {
@@ -344,10 +808,10 @@ export function WizardGame({ username, onExitGame }: WizardGameProps) {
           }
         } catch (error) {
           // This is expected in React StrictMode - just log it
-          console.log('Canvas already removed by React');
+          console.log("Canvas already removed by React");
         }
       }
-      
+
       // Dispose of Three.js resources safely
       try {
         if (currentRenderer) {
@@ -360,14 +824,14 @@ export function WizardGame({ username, onExitGame }: WizardGameProps) {
           sceneRef.current = null;
         }
       } catch (error) {
-        console.warn('Three.js cleanup warning:', error);
+        console.warn("Three.js cleanup warning:", error);
       }
-      
+
       // Disconnect from multiplayer server
       try {
         socketClient.disconnect();
       } catch (error) {
-        console.warn('Socket disconnect warning:', error);
+        console.warn("Socket disconnect warning:", error);
       }
     };
   }, []);
@@ -378,28 +842,46 @@ export function WizardGame({ username, onExitGame }: WizardGameProps) {
         <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 bg-red-600/90 text-white p-4 rounded-lg">
           <p className="font-semibold">Connection Error</p>
           <p className="text-sm">{connectionError}</p>
-          <button 
-            onClick={() => window.location.reload()} 
+          <button
+            onClick={() => window.location.reload()}
             className="mt-2 bg-white/20 px-3 py-1 rounded text-sm hover:bg-white/30"
           >
             Retry
           </button>
         </div>
       )}
-      
+
       {!isConnected && !connectionError && (
         <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 bg-purple-600/90 text-white p-4 rounded-lg">
           <p className="font-semibold">Connecting to multiplayer...</p>
           <div className="mt-2 w-6 h-6 border-2 border-white/30 border-t-white rounded-full animate-spin mx-auto" />
         </div>
       )}
-      
+
+      {/* Death Screen Overlay */}
+      {showDeathScreen && (
+        <div className="absolute inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50">
+          <div className="bg-red-900/90 border-2 border-red-500 rounded-lg p-8 text-center text-white max-w-md">
+            <div className="text-6xl mb-4">💀</div>
+            <h2 className="text-3xl font-bold mb-4 text-red-300">
+              {" "}
+              🥀🥀🥀YOU DIED! 🥀🥀🥀
+            </h2>
+            <p className="text-lg mb-6">{deathMessage}</p>
+            <div className="flex items-center justify-center gap-2 text-yellow-300">
+              <div className="animate-spin text-2xl">⏳</div>
+              <span>Respawning...</span>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Health Display */}
       <div className="absolute top-4 left-4 bg-black/50 backdrop-blur-sm rounded-lg p-4 text-white">
         <div className="flex items-center gap-3">
           <div className="text-sm font-medium">Health:</div>
           <div className="w-32 h-3 bg-gray-700 rounded-full overflow-hidden">
-            <div 
+            <div
               className="h-full bg-gradient-to-r from-red-500 to-green-500 transition-all duration-300"
               style={{ width: `${(playerStats.health / 100) * 100}%` }}
             />
@@ -414,7 +896,7 @@ export function WizardGame({ username, onExitGame }: WizardGameProps) {
       </div>
 
       {/* Spell Toolbar */}
-      <SpellToolbar 
+      <SpellToolbar
         onSpellCast={(spell) => castSpell(gameStateRef.current!, spell)}
         isConnected={isConnected}
       />
@@ -426,7 +908,7 @@ export function WizardGame({ username, onExitGame }: WizardGameProps) {
     try {
       setConnectionError(null);
       await socketClient.connect();
-      
+
       // Set up event handlers
       socketClient.setOnGameJoined((data) => {
         gameState.playerId = data.playerId;
@@ -434,62 +916,69 @@ export function WizardGame({ username, onExitGame }: WizardGameProps) {
         gameState.playerMana = data.player.mana;
         setPlayerStats({ health: data.player.health, mana: data.player.mana });
         setIsConnected(true);
-        console.log('Joined game as:', data.player.username);
+        console.log("Joined game as:", data.player.username);
       });
-      
+
       socketClient.setOnExistingPlayers((players) => {
-        players.forEach(player => {
+        players.forEach((player) => {
           if (player.id !== gameState.playerId) {
             createOtherPlayer(gameState, player);
           }
         });
       });
-      
+
       socketClient.setOnPlayerJoined((player) => {
         if (player.id !== gameState.playerId) {
           createOtherPlayer(gameState, player);
         }
       });
-      
+
       socketClient.setOnPlayerLeft((playerId) => {
         removeOtherPlayer(gameState, playerId);
       });
-      
+
       socketClient.setOnPlayerMoved((data) => {
-        updateOtherPlayer(gameState, data.playerId, data.position, data.rotation);
+        updateOtherPlayer(
+          gameState,
+          data.playerId,
+          data.position,
+          data.rotation
+        );
       });
-      
+
       socketClient.setOnProjectileCreated((projectile) => {
         if (gameStateRef.current) {
           createProjectile(gameStateRef.current, projectile);
-          console.log('Created projectile:', projectile.id, projectile.type);
+          console.log("Created projectile:", projectile.id, projectile.type);
         }
       });
-      
-      socketClient.setOnProjectilesUpdate((data: { active: Projectile[]; expired: string[] }) => {
-        if (!gameStateRef.current) return;
-        
-        // Remove expired projectiles
-        for (const expiredId of data.expired) {
-          const projectile = gameStateRef.current.projectiles.get(expiredId);
-          if (projectile) {
-            gameStateRef.current.scene.remove(projectile);
-            gameStateRef.current.projectiles.delete(expiredId);
-            console.log('Removed expired projectile:', expiredId);
+
+      socketClient.setOnProjectilesUpdate(
+        (data: { active: Projectile[]; expired: string[] }) => {
+          if (!gameStateRef.current) return;
+
+          // Remove expired projectiles
+          for (const expiredId of data.expired) {
+            const projectile = gameStateRef.current.projectiles.get(expiredId);
+            if (projectile) {
+              gameStateRef.current.scene.remove(projectile);
+              gameStateRef.current.projectiles.delete(expiredId);
+              console.log("Removed expired projectile:", expiredId);
+            }
           }
+
+          // Update existing projectiles (don't create new ones here)
+          updateProjectiles(gameStateRef.current, data.active);
         }
-        
-        // Update existing projectiles (don't create new ones here)
-        updateProjectiles(gameStateRef.current, data.active);
-      });
-      
+      );
+
       socketClient.setOnPlayerHit((data) => {
         if (data.playerId === gameState.playerId) {
           gameState.playerHealth = data.health;
-          setPlayerStats(prev => ({ ...prev, health: data.health }));
+          setPlayerStats((prev) => ({ ...prev, health: data.health }));
         }
       });
-      
+
       socketClient.setOnPlayerStatsUpdated((data) => {
         if (data.playerId === gameState.playerId) {
           gameState.playerHealth = data.health;
@@ -497,126 +986,343 @@ export function WizardGame({ username, onExitGame }: WizardGameProps) {
           setPlayerStats({ health: data.health, mana: data.mana });
         }
       });
-      
+
+      // Handle player death
+      socketClient.setOnPlayerDiedSelf((data) => {
+        console.log("💀 You died!", data.message);
+        setDeathMessage(data.message);
+        setShowDeathScreen(true);
+      });
+
+      // Handle player respawn
+      socketClient.setOnPlayerRespawned((data) => {
+        console.log("✨ You respawned!", data.message);
+        if (gameStateRef.current) {
+          // Update player position and stats
+          gameStateRef.current.wizard.position.set(
+            data.position.x,
+            data.position.y,
+            data.position.z
+          );
+          gameStateRef.current.camera.position.set(
+            data.position.x,
+            data.position.y + 5,
+            data.position.z + 10
+          );
+          gameStateRef.current.playerHealth = data.health;
+          gameStateRef.current.playerMana = data.mana;
+          setPlayerStats({ health: data.health, mana: data.mana });
+        }
+        setShowDeathScreen(false);
+        setDeathMessage("");
+      });
+
+      // Handle other player deaths (hide their character)
+      socketClient.setOnPlayerDiedOther((data) => {
+        console.log(`💀 Player ${data.username} died - hiding their character`);
+        if (gameStateRef.current) {
+          const otherPlayer = gameStateRef.current.otherPlayers.get(
+            data.playerId
+          );
+          if (otherPlayer) {
+            otherPlayer.visible = false;
+            console.log(`Hidden dead player: ${data.playerId}`);
+          }
+        }
+      });
+
+      // Handle other player respawns (show their character again)
+      socketClient.setOnPlayerRespawnedOther((data) => {
+        console.log(
+          `✨ Player ${data.username} respawned - showing their character`
+        );
+        if (gameStateRef.current) {
+          const otherPlayer = gameStateRef.current.otherPlayers.get(
+            data.playerId
+          );
+          if (otherPlayer) {
+            otherPlayer.visible = true;
+            console.log(`Showed respawned player: ${data.playerId}`);
+          }
+        }
+      });
+
       // Join the game
       socketClient.joinGame(username);
-      
     } catch (error) {
-      console.error('Failed to connect to multiplayer server:', error);
-      setConnectionError('Failed to connect to multiplayer server. Please try again.');
+      console.error("Failed to connect to multiplayer server:", error);
+      setConnectionError(
+        "Failed to connect to multiplayer server. Please try again."
+      );
     }
   }
 
   // Cast spell function
   function castSpell(gameState: GameState, spell: Spell) {
-    console.log('Attempting to cast spell:', spell.name, 'Connected:', socketClient.getIsConnected());
-    
+    console.log(
+      "Attempting to cast spell:",
+      spell.name,
+      "Connected:",
+      socketClient.getIsConnected()
+    );
+
     if (!socketClient.getIsConnected()) {
-      console.log('Cannot cast spell: Not connected to server');
+      console.log("Cannot cast spell: Not connected to server");
       return;
     }
-    
-    console.log('Casting spell:', spell.name, 'Type:', spell.type);
-    
+
+    console.log("Casting spell:", spell.name, "Type:", spell.type);
+
     // Handle different spell types
     switch (spell.type) {
-      case 'projectile':
+      case "projectile":
         castProjectileSpell(gameState, spell);
         break;
-      case 'self':
+      case "self":
         castSelfSpell(gameState, spell);
         break;
-      case 'utility':
+      case "utility":
         castUtilitySpell(gameState, spell);
         break;
-      case 'area':
+      case "area":
         castAreaSpell(gameState, spell);
         break;
     }
   }
-  
+
   // Cast projectile spells (fireball, iceball, lightning)
   function castProjectileSpell(gameState: GameState, spell: Spell) {
-    console.log('Casting projectile spell:', spell.id);
-    
+    console.log("Casting projectile spell:", spell.id);
+
     // Get camera direction for spell casting
     const cameraDirection = new THREE.Vector3();
     gameState.camera.getWorldDirection(cameraDirection);
     cameraDirection.normalize();
-    
+
     // Prevent fireballs from going underground by limiting downward angle
     const minY = -0.2; // Limit downward angle to prevent going underground
     if (cameraDirection.y < minY) {
       cameraDirection.y = minY;
       cameraDirection.normalize(); // Re-normalize after adjustment
     }
-    
-    // Cast from wizard position at a good height
+
+    // Cast from wizard's staff orb position for better visual origin
+    const staffOrbWorldPosition = new THREE.Vector3();
+
+    // Find the staff orb in the wizard group
+    const staffOrb = gameState.wizard.children.find(
+      (child) =>
+        child instanceof THREE.Mesh &&
+        (child.material as THREE.MeshLambertMaterial).color.getHex() ===
+          0x00ffff
+    );
+
+    if (staffOrb) {
+      // Get the world position of the staff orb
+      staffOrb.getWorldPosition(staffOrbWorldPosition);
+    } else {
+      // Fallback to wizard position + offset if orb not found
+      staffOrbWorldPosition.copy(gameState.wizard.position);
+      staffOrbWorldPosition.y += 4; // Staff orb height
+      staffOrbWorldPosition.x += 1.8; // Staff orb x offset
+    }
+
     const spellPosition = {
-      x: gameState.wizard.position.x,
-      y: gameState.wizard.position.y + 2.5, // Cast from higher up
-      z: gameState.wizard.position.z
+      x: staffOrbWorldPosition.x,
+      y: staffOrbWorldPosition.y,
+      z: staffOrbWorldPosition.z,
     };
-    
+
     const spellDirection = {
       x: cameraDirection.x,
       y: cameraDirection.y,
-      z: cameraDirection.z
+      z: cameraDirection.z,
     };
-    
-    console.log('Sending spell to server:', {
+
+    console.log("Sending spell to server:", {
       position: spellPosition,
       direction: spellDirection,
-      spellType: spell.id
+      spellType: spell.id,
     });
-    
-    socketClient.castSpell(spellPosition, spellDirection, spell.id);
+
+    socketClient.castSpell(
+      spellPosition,
+      spellDirection,
+      spell.id === "lightning" ? "laser" : spell.id
+    );
   }
-  
+
   // Cast self spells (heal)
   function castSelfSpell(gameState: GameState, spell: Spell) {
-    if (spell.id === 'heal') {
+    if (spell.id === "heal") {
       // Heal spell - restore health
       gameState.playerHealth = Math.min(100, gameState.playerHealth + 30);
-      setPlayerStats(prev => ({ ...prev, health: gameState.playerHealth }));
-      
+      setPlayerStats((prev) => ({ ...prev, health: gameState.playerHealth }));
+
       // Create visual healing effect
       createHealingEffect(gameState);
     }
   }
-  
+
   // Cast utility spells (teleport)
   function castUtilitySpell(gameState: GameState, spell: Spell) {
-    if (spell.id === 'teleport') {
+    if (spell.id === "teleport") {
       // Teleport spell - move forward
       const cameraDirection = new THREE.Vector3();
       gameState.camera.getWorldDirection(cameraDirection);
       cameraDirection.y = 0; // Keep on ground level
       cameraDirection.normalize();
-      
+
       const teleportDistance = 10;
-      gameState.wizard.position.add(cameraDirection.multiplyScalar(teleportDistance));
-      
+      gameState.wizard.position.add(
+        cameraDirection.multiplyScalar(teleportDistance)
+      );
+
       // Create visual teleport effect
       createTeleportEffect(gameState);
     }
   }
-  
-  // Cast area spells (future implementation)
-  function castAreaSpell(_gameState: GameState, spell: Spell) {
-    // Placeholder for area spells
-    console.log(`Area spell ${spell.name} not implemented yet`);
+
+  // Cast area spells (artillery strike)
+  function castAreaSpell(gameState: GameState, spell: Spell) {
+    if (spell.id === "iceball") {
+      castArtilleryStrike(gameState);
+    } else {
+      console.log(`Area spell ${spell.name} not implemented yet`);
+    }
   }
-  
+
+  // Cast artillery strike - shotgun barrage at closest player
+  function castArtilleryStrike(gameState: GameState) {
+    console.log("Casting artillery strike");
+
+    if (!socketClient.getIsConnected()) {
+      console.log("Cannot cast artillery: Not connected to server");
+      return;
+    }
+
+    // Find closest enemy player
+    let closestPlayer = null;
+    let closestDistance = Infinity;
+
+    for (const [playerId, playerWizard] of gameState.otherPlayers) {
+      if (playerId !== gameState.playerId) {
+        const distance = gameState.wizard.position.distanceTo(
+          playerWizard.position
+        );
+        if (distance < closestDistance) {
+          closestDistance = distance;
+          closestPlayer = { id: playerId, wizard: playerWizard };
+        }
+      }
+    }
+
+    if (!closestPlayer) {
+      console.log("No target found for artillery strike");
+      return;
+    }
+
+    console.log(
+      `Artillery targeting player at distance ${closestDistance.toFixed(2)}`
+    );
+
+    // Get staff orb position for origin
+    const staffOrbWorldPosition = new THREE.Vector3();
+    const staffOrb = gameState.wizard.children.find(
+      (child) =>
+        child instanceof THREE.Mesh &&
+        (child.material as THREE.MeshLambertMaterial).color.getHex() ===
+          0x00ffff
+    );
+
+    if (staffOrb) {
+      staffOrb.getWorldPosition(staffOrbWorldPosition);
+    } else {
+      staffOrbWorldPosition.copy(gameState.wizard.position);
+      staffOrbWorldPosition.y += 4;
+      staffOrbWorldPosition.x += 1.8;
+    }
+
+    // Cast multiple projectiles in a shotgun pattern
+    const projectileCount = 8; // Number of artillery shells
+
+    for (let i = 0; i < projectileCount; i++) {
+      // Get target position
+      const targetPos = closestPlayer.wizard.position;
+
+      console.log(
+        `Artillery shell ${i + 1}: Caster at [${staffOrbWorldPosition.x.toFixed(
+          1
+        )}, ${staffOrbWorldPosition.y.toFixed(
+          1
+        )}, ${staffOrbWorldPosition.z.toFixed(1)}]`
+      );
+      console.log(
+        `Artillery shell ${i + 1}: Target at [${targetPos.x.toFixed(
+          1
+        )}, ${targetPos.y.toFixed(1)}, ${targetPos.z.toFixed(1)}]`
+      );
+
+      // Calculate direction vector from caster to target
+      const deltaX = targetPos.x - staffOrbWorldPosition.x;
+      const deltaZ = targetPos.z - staffOrbWorldPosition.z;
+
+      console.log(
+        `Artillery shell ${i + 1}: Delta [${deltaX.toFixed(
+          1
+        )}, ${deltaZ.toFixed(1)}]`
+      );
+
+      // Create mortar-style trajectory: purely straight up initially
+      const direction = new THREE.Vector3();
+
+      // Fire purely straight up - no horizontal movement at launch
+      direction.x = 0;
+      direction.z = 0;
+      direction.y = 1; // Straight up only
+
+      // Add only small random spread for launch variation (not target-based)
+      direction.x += (Math.random() - 0.5) * 0.2; // Very small spread at launch
+      direction.z += (Math.random() - 0.5) * 0.2; // Very small spread at launch
+
+      // Normalize to maintain consistent launch speed
+      direction.normalize();
+
+      console.log(
+        `Artillery shell ${i + 1}: Final direction [${direction.x.toFixed(
+          2
+        )}, ${direction.y.toFixed(2)}, ${direction.z.toFixed(2)}]`
+      );
+
+      const spellPosition = {
+        x: staffOrbWorldPosition.x,
+        y: staffOrbWorldPosition.y,
+        z: staffOrbWorldPosition.z,
+      };
+
+      const spellDirection = {
+        x: direction.x,
+        y: direction.y,
+        z: direction.z,
+      };
+
+      // Stagger the shots slightly for visual effect
+      setTimeout(() => {
+        console.log(`Firing artillery shell ${i + 1}/${projectileCount}`);
+        socketClient.castSpell(spellPosition, spellDirection, "iceball");
+      }, i * 100); // 100ms delay between shots
+    }
+  }
+
   // Create healing visual effect
   function createHealingEffect(gameState: GameState) {
     const healingGeometry = new THREE.SphereGeometry(0.5, 8, 6);
-    const healingMaterial = new THREE.MeshBasicMaterial({ 
-      color: 0x32CD32, 
-      transparent: true, 
-      opacity: 0.7 
+    const healingMaterial = new THREE.MeshBasicMaterial({
+      color: 0x32cd32,
+      transparent: true,
+      opacity: 0.7,
     });
-    
+
     // Create multiple healing orbs
     for (let i = 0; i < 5; i++) {
       const healingOrb = new THREE.Mesh(healingGeometry, healingMaterial);
@@ -624,15 +1330,15 @@ export function WizardGame({ username, onExitGame }: WizardGameProps) {
       healingOrb.position.y += 1 + Math.random() * 2;
       healingOrb.position.x += (Math.random() - 0.5) * 2;
       healingOrb.position.z += (Math.random() - 0.5) * 2;
-      
+
       gameState.scene.add(healingOrb);
-      
+
       // Animate healing orb
       const startTime = Date.now();
       const animateHealing = () => {
         const elapsed = Date.now() - startTime;
         const progress = elapsed / 2000; // 2 second animation
-        
+
         if (progress < 1) {
           healingOrb.position.y += 0.02;
           healingOrb.material.opacity = 0.7 * (1 - progress);
@@ -644,35 +1350,35 @@ export function WizardGame({ username, onExitGame }: WizardGameProps) {
           healingMaterial.dispose();
         }
       };
-      
+
       setTimeout(() => animateHealing(), i * 200); // Stagger the orbs
     }
   }
-  
+
   // Create teleport visual effect
   function createTeleportEffect(gameState: GameState) {
     const teleportGeometry = new THREE.RingGeometry(0.5, 2, 16);
-    const teleportMaterial = new THREE.MeshBasicMaterial({ 
-      color: 0x9370DB, 
-      transparent: true, 
+    const teleportMaterial = new THREE.MeshBasicMaterial({
+      color: 0x9370db,
+      transparent: true,
       opacity: 0.8,
-      side: THREE.DoubleSide
+      side: THREE.DoubleSide,
     });
-    
+
     // Create teleport ring at current position
     const teleportRing = new THREE.Mesh(teleportGeometry, teleportMaterial);
     teleportRing.position.copy(gameState.wizard.position);
     teleportRing.position.y = 0.1; // Just above ground
     teleportRing.rotation.x = -Math.PI / 2; // Lay flat
-    
+
     gameState.scene.add(teleportRing);
-    
+
     // Animate teleport ring
     const startTime = Date.now();
     const animateTeleport = () => {
       const elapsed = Date.now() - startTime;
       const progress = elapsed / 1000; // 1 second animation
-      
+
       if (progress < 1) {
         teleportRing.scale.setScalar(1 + progress * 2);
         teleportRing.material.opacity = 0.8 * (1 - progress);
@@ -684,50 +1390,62 @@ export function WizardGame({ username, onExitGame }: WizardGameProps) {
         teleportMaterial.dispose();
       }
     };
-    
+
     animateTeleport();
   }
 
   // Create other player function
   function createOtherPlayer(gameState: GameState, player: Player) {
     const otherWizard = createWizard();
-    
+
     // Set player color
-    const bodyMesh = otherWizard.children.find(child => 
-      child instanceof THREE.Mesh && 
-      (child.material as THREE.MeshLambertMaterial).color.getHex() === 0x4169E1
+    const bodyMesh = otherWizard.children.find(
+      (child: THREE.Object3D) =>
+        child instanceof THREE.Mesh &&
+        (child.material as THREE.MeshLambertMaterial).color.getHex() ===
+          0x4169e1
     ) as THREE.Mesh;
-    
+
     if (bodyMesh) {
-      (bodyMesh.material as THREE.MeshLambertMaterial).color.setHex(player.color);
+      (bodyMesh.material as THREE.MeshLambertMaterial).color.setHex(
+        player.color
+      );
     }
-    
+
     // Set position and rotation
-    otherWizard.position.set(player.position.x, player.position.y, player.position.z);
-    otherWizard.rotation.set(player.rotation.x, player.rotation.y, player.rotation.z);
-    
+    otherWizard.position.set(
+      player.position.x,
+      player.position.y,
+      player.position.z
+    );
+    otherWizard.rotation.set(
+      player.rotation.x,
+      player.rotation.y,
+      player.rotation.z
+    );
+
     // Add username label
-    const canvas = document.createElement('canvas');
-    const context = canvas.getContext('2d')!;
+    const canvas = document.createElement("canvas");
+    const context = canvas.getContext("2d")!;
     canvas.width = 256;
     canvas.height = 64;
-    context.fillStyle = 'rgba(0, 0, 0, 0.8)';
+    context.fillStyle = "rgba(0, 0, 0, 0.4)";
     context.fillRect(0, 0, 256, 64);
-    context.fillStyle = 'white';
-    context.font = '20px Arial';
-    context.textAlign = 'center';
+    context.fillStyle = "white";
+    context.font = "20px Arial";
+    context.textAlign = "center";
     context.fillText(player.username, 128, 40);
-    
+
     const texture = new THREE.CanvasTexture(canvas);
     const labelMaterial = new THREE.SpriteMaterial({ map: texture });
     const label = new THREE.Sprite(labelMaterial);
     label.position.set(0, 6, 0);
     label.scale.set(4, 1, 1);
     otherWizard.add(label);
-    
+
     gameState.otherPlayers.set(player.id, otherWizard);
     gameState.scene.add(otherWizard);
-    
+
     console.log(`Added other player: ${player.username}`);
   }
 
@@ -742,339 +1460,94 @@ export function WizardGame({ username, onExitGame }: WizardGameProps) {
   }
 
   // Update other player function
-  function updateOtherPlayer(gameState: GameState, playerId: string, position: any, rotation: any) {
+  function updateOtherPlayer(
+    gameState: GameState,
+    playerId: string,
+    position: any,
+    rotation: any
+  ) {
     const otherWizard = gameState.otherPlayers.get(playerId);
     if (otherWizard) {
       // Smooth interpolation to new position
-      otherWizard.position.lerp(new THREE.Vector3(position.x, position.y, position.z), 0.3);
+      otherWizard.position.lerp(
+        new THREE.Vector3(position.x, position.y, position.z),
+        0.3
+      );
       otherWizard.rotation.set(rotation.x, rotation.y, rotation.z);
     }
   }
 
+  // Note: hideOtherPlayer and showOtherPlayer functionality is now handled inline in event handlers
+
   // Create projectile function
   function createProjectile(gameState: GameState, projectile: Projectile) {
-    let projectileGeometry, projectileMaterial, glowMaterial;
-    
-    // Different visuals based on spell type
-    switch (projectile.type) {
-      case 'fireball':
-        projectileGeometry = new THREE.SphereGeometry(0.3, 8, 6);
-        projectileMaterial = new THREE.MeshLambertMaterial({ 
-          color: 0xFF4500,
-          emissive: 0xFF2200,
-          emissiveIntensity: 0.7
-        });
-        glowMaterial = new THREE.MeshLambertMaterial({
-          color: 0xFF6600,
-          transparent: true,
-          opacity: 0.6
-        });
-        break;
-      case 'iceball':
-        projectileGeometry = new THREE.SphereGeometry(0.25, 8, 6);
-        projectileMaterial = new THREE.MeshLambertMaterial({ 
-          color: 0x00BFFF,
-          emissive: 0x0088CC,
-          emissiveIntensity: 0.2
-        });
-        glowMaterial = new THREE.MeshLambertMaterial({
-          color: 0x87CEEB,
-          transparent: true,
-          opacity: 0.4
-        });
-        break;
-      case 'lightning':
-        projectileGeometry = new THREE.SphereGeometry(0.2, 6, 4);
-        projectileMaterial = new THREE.MeshLambertMaterial({ 
-          color: 0xFFD700,
-          emissive: 0xFFFF00,
-          emissiveIntensity: 0.5
-        });
-        glowMaterial = new THREE.MeshLambertMaterial({
-          color: 0xFFFF00,
-          transparent: true,
-          opacity: 0.5
-        });
-        break;
-      default:
-        projectileGeometry = new THREE.SphereGeometry(0.3, 8, 6);
-        projectileMaterial = new THREE.MeshLambertMaterial({ 
-          color: 0xFF4500,
-          emissive: 0xFF2200,
-          emissiveIntensity: 0.3
-        });
-        glowMaterial = new THREE.MeshLambertMaterial({
-          color: 0xFF6600,
-          transparent: true,
-          opacity: 0.3
-        });
+    let projectileGeometry, projectileMaterial;
+
+    // Choose geometry/material based on projectile type
+    if (projectile.type === "fireball") {
+      projectileGeometry = new THREE.SphereGeometry(0.3, 10, 8);
+      projectileMaterial = new THREE.MeshBasicMaterial({ color: 0xff6600 });
+    } else if (projectile.type === "iceball") {
+      projectileGeometry = new THREE.SphereGeometry(0.4, 12, 10);
+      projectileMaterial = new THREE.MeshBasicMaterial({ color: 0x00ccff });
+    } else {
+      projectileGeometry = new THREE.SphereGeometry(0.25, 8, 6);
+      projectileMaterial = new THREE.MeshBasicMaterial({ color: 0xffffff });
     }
-    
-    const projectileMesh = new THREE.Mesh(projectileGeometry, projectileMaterial);
-    
+
+    const projectileMesh = new THREE.Mesh(
+      projectileGeometry,
+      projectileMaterial
+    );
+
     // Set initial position
     projectileMesh.position.set(
       projectile.position.x,
       projectile.position.y,
       projectile.position.z
     );
-    
-    // Add glow effect
-    const glowGeometry = new THREE.SphereGeometry(
-      projectileGeometry.parameters.radius * 1.5, 
-      8, 
-      6
-    );
-    const glowMesh = new THREE.Mesh(glowGeometry, glowMaterial);
-    
+
+    // Create projectile group
     const projectileGroup = new THREE.Group();
     projectileGroup.add(projectileMesh);
-    projectileGroup.add(glowMesh);
-    
-    // Add homing trail effect for fireballs
-    if (projectile.type === 'fireball') {
-      const trailGeometry = new THREE.ConeGeometry(0.1, 1, 4);
-      const trailMaterial = new THREE.MeshLambertMaterial({ 
-        color: 0xFF8C00, 
-        transparent: true, 
-        opacity: 0.6 
-      });
-      const trail = new THREE.Mesh(trailGeometry, trailMaterial);
-      trail.position.z = -0.5; // Behind the fireball
-      projectileGroup.add(trail);
+
+    // Add flame particles for fireball
+    if (projectile.type === "fireball") {
+      // Create flame particles around the fireball
+      for (let i = 0; i < 8; i++) {
+        const flameGeometry = new THREE.SphereGeometry(0.1, 6, 4);
+        const flameMaterial = new THREE.MeshBasicMaterial({
+          color: Math.random() > 0.5 ? 0xff6600 : 0xff2200,
+          transparent: true,
+          opacity: 0.8,
+        });
+        const flameParticle = new THREE.Mesh(flameGeometry, flameMaterial);
+
+        // Position particles around the main fireball
+        const angle = (i / 8) * Math.PI * 2;
+        const radius = 0.3;
+        flameParticle.position.set(
+          Math.cos(angle) * radius,
+          Math.sin(angle * 0.5) * 0.2,
+          Math.sin(angle) * radius
+        );
+
+        projectileGroup.add(flameParticle);
+      }
     }
-    
+
     // Store projectile data for updates
     projectileGroup.userData = {
       id: projectile.id,
       type: projectile.type,
       targetId: projectile.targetId,
-      lastPosition: { ...projectile.position }
+      lastPosition: { ...projectile.position },
     };
-    
+
     gameState.projectiles.set(projectile.id, projectileGroup);
     gameState.scene.add(projectileGroup);
   }
+} // End of WizardGame component function
 
-  // Update projectiles function
-  function updateProjectiles(gameState: GameState, projectileUpdates: Projectile[]) {
-    for (const update of projectileUpdates) {
-      const projectileGroup = gameState.projectiles.get(update.id);
-      if (projectileGroup) {
-        // Smooth interpolation for better visual feedback
-        const targetPos = update.position;
-        
-        // Lerp position for smooth movement
-        const lerpFactor = 0.3;
-        projectileGroup.position.lerp(
-          new THREE.Vector3(targetPos.x, targetPos.y, targetPos.z),
-          lerpFactor
-        );
-        
-        // Enhanced rotation and effects based on type
-        if (update.type === 'fireball') {
-          // Fireball specific effects
-          projectileGroup.rotation.x += 0.3;
-          projectileGroup.rotation.y += 0.2;
-          
-          // Enhanced pulsing effect for homing fireballs
-          if (update.targetId) {
-            const time = Date.now() * 0.008;
-            projectileGroup.scale.setScalar(1.2 + Math.sin(time) * 0.4);
-            
-            // Add more dramatic wobble effect for homing
-            const wobble = Math.sin(time * 3) * 0.2;
-            projectileGroup.position.x += wobble;
-            projectileGroup.position.z += wobble * 0.7;
-            
-            // Add glowing trail effect
-            const fireball = projectileGroup.children[0] as THREE.Mesh;
-            if (fireball && fireball.material) {
-              const material = fireball.material as THREE.MeshLambertMaterial;
-              if (material.emissive) {
-                material.emissive.setHex(0xff4400);
-              }
-            }
-          } else {
-            // Regular fireball scaling
-            const time = Date.now() * 0.005;
-            projectileGroup.scale.setScalar(1 + Math.sin(time) * 0.2);
-          }
-        } else if (update.type === 'iceball') {
-          // Ice shard effects
-          projectileGroup.rotation.z += 0.4;
-          const time = Date.now() * 0.01;
-          projectileGroup.scale.setScalar(1 + Math.sin(time) * 0.15);
-        } else if (update.type === 'lightning') {
-          // Lightning effects
-          projectileGroup.rotation.y += 0.35;
-          const time = Date.now() * 0.012;
-          projectileGroup.scale.setScalar(1 + Math.sin(time) * 0.25);
-        } else {
-          // Default rotation
-          projectileGroup.rotation.x += 0.15;
-          projectileGroup.rotation.y += 0.15;
-        }
-        
-        // Update user data
-        projectileGroup.userData.targetId = update.targetId;
-        projectileGroup.userData.lastPosition = { ...update.position };
-        projectileGroup.userData.lastUpdate = Date.now();
-      }
-    }
-  }
-
-  // Update multiplayer objects function
-  function updateMultiplayerObjects(gameState: GameState) {
-    // Send player position update to server
-    if (socketClient.getIsConnected() && gameState.playerId) {
-      const position = {
-        x: gameState.wizard.position.x,
-        y: gameState.wizard.position.y,
-        z: gameState.wizard.position.z
-      };
-      
-      const rotation = {
-        x: gameState.wizard.rotation.x,
-        y: gameState.wizard.rotation.y,
-        z: gameState.wizard.rotation.z
-      };
-      
-      socketClient.updatePlayer(position, rotation);
-    }
-  }
-}
-
-function createWizard(): THREE.Group {
-  const wizard = new THREE.Group();
-
-  // Body (cylinder)
-  const bodyGeometry = new THREE.CylinderGeometry(0.8, 1.2, 2.5, 8);
-  const bodyMaterial = new THREE.MeshLambertMaterial({ color: 0x4169E1 }); // Royal blue
-  const body = new THREE.Mesh(bodyGeometry, bodyMaterial);
-  body.position.y = 1.25;
-  body.castShadow = true;
-  wizard.add(body);
-
-  // Head (sphere)
-  const headGeometry = new THREE.SphereGeometry(0.6, 8, 6);
-  const headMaterial = new THREE.MeshLambertMaterial({ color: 0xFFDBAC }); // Skin color
-  const head = new THREE.Mesh(headGeometry, headMaterial);
-  head.position.y = 3.1;
-  head.castShadow = true;
-  wizard.add(head);
-
-  // Hat (cone)
-  const hatGeometry = new THREE.ConeGeometry(0.8, 1.5, 8);
-  const hatMaterial = new THREE.MeshLambertMaterial({ color: 0x800080 }); // Purple
-  const hat = new THREE.Mesh(hatGeometry, hatMaterial);
-  hat.position.y = 4.4;
-  hat.castShadow = true;
-  wizard.add(hat);
-
-  // Arms
-  const armGeometry = new THREE.CylinderGeometry(0.2, 0.2, 1.5, 6);
-  const armMaterial = new THREE.MeshLambertMaterial({ color: 0xFFDBAC });
-  
-  const leftArm = new THREE.Mesh(armGeometry, armMaterial);
-  leftArm.position.set(-1.2, 1.8, 0);
-  leftArm.rotation.z = Math.PI / 6;
-  leftArm.castShadow = true;
-  wizard.add(leftArm);
-
-  const rightArm = new THREE.Mesh(armGeometry, armMaterial);
-  rightArm.position.set(1.2, 1.8, 0);
-  rightArm.rotation.z = -Math.PI / 6;
-  rightArm.castShadow = true;
-  wizard.add(rightArm);
-
-  // Staff
-  const staffGeometry = new THREE.CylinderGeometry(0.05, 0.05, 3, 6);
-  const staffMaterial = new THREE.MeshLambertMaterial({ color: 0x8B4513 }); // Brown
-  const staff = new THREE.Mesh(staffGeometry, staffMaterial);
-  staff.position.set(1.8, 2.5, 0);
-  staff.castShadow = true;
-  wizard.add(staff);
-
-  // Staff orb
-  const orbGeometry = new THREE.SphereGeometry(0.3, 8, 6);
-  const orbMaterial = new THREE.MeshLambertMaterial({ 
-    color: 0x00FFFF,
-    emissive: 0x004444
-  });
-  const orb = new THREE.Mesh(orbGeometry, orbMaterial);
-  orb.position.set(1.8, 4, 0);
-  orb.castShadow = true;
-  wizard.add(orb);
-
-  return wizard;
-}
-
-function updateGame(gameState: GameState) {
-  const { wizard, keys, camera, cameraOffset } = gameState;
-  const moveSpeed = 0.1;
-
-  // Calculate camera's forward direction (projected onto the ground plane)
-  const cameraDirection = new THREE.Vector3();
-  camera.getWorldDirection(cameraDirection);
-  cameraDirection.y = 0; // Remove vertical component
-  cameraDirection.normalize();
-  
-  // Calculate camera's right direction
-  const cameraRight = new THREE.Vector3();
-  cameraRight.crossVectors(cameraDirection, new THREE.Vector3(0, 1, 0));
-  cameraRight.normalize();
-
-  // Movement vector
-  const moveVector = new THREE.Vector3(0, 0, 0);
-  let isMoving = false;
-
-  // WASD movement relative to camera direction
-  if (keys['KeyW']) {
-    moveVector.add(cameraDirection.clone().multiplyScalar(moveSpeed));
-    isMoving = true;
-  }
-  if (keys['KeyS']) {
-    moveVector.add(cameraDirection.clone().multiplyScalar(-moveSpeed));
-    isMoving = true;
-  }
-  if (keys['KeyA']) {
-    moveVector.add(cameraRight.clone().multiplyScalar(-moveSpeed));
-    isMoving = true;
-  }
-  if (keys['KeyD']) {
-    moveVector.add(cameraRight.clone().multiplyScalar(moveSpeed));
-    isMoving = true;
-  }
-
-  // Apply movement
-  if (isMoving) {
-    wizard.position.add(moveVector);
-  }
-  
-  // Always make wizard face the camera direction (projected onto ground plane)
-  const cameraForward = new THREE.Vector3();
-  camera.getWorldDirection(cameraForward);
-  cameraForward.y = 0; // Project onto ground plane
-  cameraForward.normalize();
-  
-  // Set wizard rotation to face camera direction
-  wizard.rotation.y = Math.atan2(cameraForward.x, cameraForward.z);
-
-  // Update camera to follow wizard (third person)
-  const targetPosition = wizard.position.clone().add(cameraOffset);
-  camera.position.lerp(targetPosition, 0.1);
-  
-  // Always look at wizard (this handles both movement and mouse rotation)
-  camera.lookAt(wizard.position);
-
-  // Add some floating animation to the staff orb
-  const time = Date.now() * 0.001;
-  const orb = wizard.children.find(child => 
-    child instanceof THREE.Mesh && 
-    (child.material as THREE.MeshLambertMaterial).color.getHex() === 0x00FFFF
-  );
-  if (orb) {
-    orb.position.y = 4 + Math.sin(time * 2) * 0.1;
-  }
-}
+// Export the component
+export default WizardGame;
