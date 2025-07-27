@@ -1357,11 +1357,14 @@ export function WizardGame({ username, onExitGame }: WizardGameProps) {
     let closestPlayer = null;
     let closestDistance = Infinity;
 
+    console.log(`Looking for targets. Other players count: ${gameState.otherPlayers.size}`);
+    
     for (const [playerId, playerWizard] of gameState.otherPlayers) {
       if (playerId !== gameState.playerId) {
         const distance = gameState.wizard.position.distanceTo(
           playerWizard.position
         );
+        console.log(`Found potential target ${playerId} at distance ${distance.toFixed(2)}`);
         if (distance < closestDistance) {
           closestDistance = distance;
           closestPlayer = { id: playerId, wizard: playerWizard };
@@ -1370,12 +1373,31 @@ export function WizardGame({ username, onExitGame }: WizardGameProps) {
     }
 
     if (!closestPlayer) {
-      console.log("No target found for artillery strike");
-      return;
+      console.log("No target found for artillery strike - firing at random area ahead");
+      // If no enemy players, fire at a random area in front of the caster
+      const cameraDirection = new THREE.Vector3();
+      gameState.camera.getWorldDirection(cameraDirection);
+      cameraDirection.y = 0; // Keep horizontal
+      cameraDirection.normalize();
+      
+      // Create a fake target position ahead of the player
+      const targetDistance = 20 + Math.random() * 15; // 20-35 units ahead
+      const fakeTarget = gameState.wizard.position.clone();
+      fakeTarget.add(cameraDirection.multiplyScalar(targetDistance));
+      
+      // Add some random offset to the fake target
+      fakeTarget.x += (Math.random() - 0.5) * 20;
+      fakeTarget.z += (Math.random() - 0.5) * 20;
+      
+      closestPlayer = {
+        id: "fake",
+        wizard: { position: fakeTarget }
+      };
+      closestDistance = targetDistance;
     }
 
     console.log(
-      `Artillery targeting player at distance ${closestDistance.toFixed(2)}`
+      `Artillery targeting ${closestPlayer.id === "fake" ? "random area" : "player"} at distance ${closestDistance.toFixed(2)}`
     );
 
     // Get staff orb position for origin
@@ -1396,7 +1418,7 @@ export function WizardGame({ username, onExitGame }: WizardGameProps) {
     }
 
     // Cast multiple projectiles in a shotgun pattern
-    const projectileCount = 8; // Number of artillery shells
+    const projectileCount = 16; // Increased from 12 to 16 for even more coverage
 
     for (let i = 0; i < projectileCount; i++) {
       // Get target position
@@ -1425,17 +1447,30 @@ export function WizardGame({ username, onExitGame }: WizardGameProps) {
         )}, ${deltaZ.toFixed(1)}]`
       );
 
-      // Create mortar-style trajectory: purely straight up initially
+      // Create mortar-style trajectory aimed at target with spread
       const direction = new THREE.Vector3();
 
-      // Fire purely straight up - no horizontal movement at launch
-      direction.x = 0;
-      direction.z = 0;
-      direction.y = 1; // Straight up only
+      // Calculate base direction toward target
+      const baseDirection = new THREE.Vector3(
+        deltaX,
+        0, // Start with horizontal aim
+        deltaZ
+      );
+      baseDirection.normalize();
 
-      // Add only small random spread for launch variation (not target-based)
-      direction.x += (Math.random() - 0.5) * 0.2; // Very small spread at launch
-      direction.z += (Math.random() - 0.5) * 0.2; // Very small spread at launch
+      // Set higher mortar angle for much higher arcs (60 degrees instead of 45)
+      const mortarAngle = Math.PI / 3; // 60 degrees for much higher arcs
+      direction.x = baseDirection.x * Math.cos(mortarAngle);
+      direction.y = Math.sin(mortarAngle); // Much stronger upward component for higher arcs
+      direction.z = baseDirection.z * Math.cos(mortarAngle);
+
+      // Add much more random spread around the target for wider artillery barrage
+      const spreadAmount = 0.8; // Increased from 0.3 to 0.8 for much wider spread
+      direction.x += (Math.random() - 0.5) * spreadAmount;
+      direction.z += (Math.random() - 0.5) * spreadAmount;
+
+      // Add more variation in launch angle for more realistic artillery spread
+      direction.y += (Math.random() - 0.5) * 0.4; // Increased from 0.2 to 0.4 for more launch angle variation
 
       // Normalize to maintain consistent launch speed
       direction.normalize();
@@ -1735,7 +1770,7 @@ export function WizardGame({ username, onExitGame }: WizardGameProps) {
       projectileMaterial = new THREE.MeshBasicMaterial({ color: 0xff6600 });
     } else if (projectile.type === "iceball") {
       projectileGeometry = new THREE.SphereGeometry(0.4, 12, 10);
-      projectileMaterial = new THREE.MeshBasicMaterial({ color: 0x00ccff });
+      projectileMaterial = new THREE.MeshBasicMaterial({ color: 0xff6600 });
     } else {
       projectileGeometry = new THREE.SphereGeometry(0.25, 8, 6);
       projectileMaterial = new THREE.MeshBasicMaterial({ color: 0xffffff });

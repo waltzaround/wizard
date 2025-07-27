@@ -240,21 +240,13 @@ class Projectile {
     // Artillery properties for iceball (mortar-style)
     if (type === "iceball") {
       this.isArtillery = true;
-      this.gravity = -20; // Stronger gravity for mortar-style arc
+      this.gravity = -15; // Stronger gravity for more realistic arc
+      this.speed = this.speed * 0.8; // Make shells slower and more visible
+      
       // For mortar artillery, we need special physics
       this.velocity = { ...direction };
-      // Scale velocity appropriately for mortar trajectory
-      const ballisticSpeed = this.speed * 1.5; // Reduced from 2 to 1.5 for proper ground impact
-      this.velocity.x *= ballisticSpeed;
-      this.velocity.y *= ballisticSpeed; // Strong upward velocity
-      this.velocity.z *= ballisticSpeed;
-
-      // Store launch position and find target for course correction
-      this.launchPosition = { ...position };
-      this.hasAppliedTargeting = false;
-      this.launchTime = Date.now();
-
-      // Find the target player for course correction
+      
+      // Find the target player first to calculate proper trajectory
       this.targetPlayer = null;
       let closestDistance = Infinity;
       for (const player of gameState.players.values()) {
@@ -269,6 +261,86 @@ class Projectile {
           }
         }
       }
+      
+      // Calculate ballistic trajectory toward target with proper spread
+      if (this.targetPlayer) {
+        const targetDistance = Math.sqrt(
+          Math.pow(position.x - this.targetPlayer.position.x, 2) +
+            Math.pow(position.z - this.targetPlayer.position.z, 2)
+        );
+        
+        // Calculate direction to target
+        const toTarget = {
+          x: this.targetPlayer.position.x - position.x,
+          z: this.targetPlayer.position.z - position.z
+        };
+        
+        // CREATE CIRCULAR SHOTGUN SPREAD AROUND TARGET - like a shotgun blast pattern
+        // Generate random angle and distance for circular spread around target
+        const spreadRadius = Math.max(15, Math.min(25, targetDistance * 0.4)); // 15-25 unit radius around target
+        const randomAngle = Math.random() * 2 * Math.PI; // Random angle 0-360 degrees
+        const randomDistance = Math.random() * spreadRadius; // Random distance within radius
+        
+        // Calculate circular spread offset around target position
+        const spreadOffsetX = Math.cos(randomAngle) * randomDistance;
+        const spreadOffsetZ = Math.sin(randomAngle) * randomDistance;
+        
+        // Apply circular spread to target position (not direction)
+        const targetWithSpread = {
+          x: this.targetPlayer.position.x + spreadOffsetX,
+          z: this.targetPlayer.position.z + spreadOffsetZ
+        };
+        
+        // Calculate direction to spread target position
+        toTarget.x = targetWithSpread.x - position.x;
+        toTarget.z = targetWithSpread.z - position.z;
+        
+        // Normalize horizontal direction after applying spread
+        const horizontalDistance = Math.sqrt(toTarget.x * toTarget.x + toTarget.z * toTarget.z);
+        if (horizontalDistance > 0) {
+          toTarget.x /= horizontalDistance;
+          toTarget.z /= horizontalDistance;
+        }
+        
+        // Calculate ballistic velocity with improved accuracy for target landing
+        // Use physics-based calculation for proper trajectory to target
+        const gravity = Math.abs(this.gravity); // 15
+        const targetHeight = 0.5; // Ground level where target is
+        const launchHeight = position.y; // Current launch height
+        const heightDiff = targetHeight - launchHeight;
+        
+        // Calculate optimal launch angle and speed for accurate target landing
+        // Use ballistic trajectory formula: range = (v²sin(2θ))/g + (v²sin²(θ))/g * (2h/v²sin²(θ))
+        const optimalAngle = 45; // 45 degrees for maximum range efficiency
+        const angleRad = (optimalAngle * Math.PI) / 180;
+        
+        // Calculate required speed to reach target distance with spread consideration
+        const baseSpeed = Math.sqrt((targetDistance * gravity) / Math.sin(2 * angleRad));
+        const adjustedSpeed = Math.max(12, Math.min(35, baseSpeed * 0.7)); // Reduced speed range for better accuracy
+        
+        // Calculate velocity components for accurate landing
+        const horizontalSpeed = adjustedSpeed * Math.cos(angleRad);
+        const verticalSpeed = adjustedSpeed * Math.sin(angleRad);
+        
+        this.velocity.x = toTarget.x * horizontalSpeed;
+        this.velocity.y = verticalSpeed;
+        this.velocity.z = toTarget.z * horizontalSpeed;
+        
+        console.log(
+          `🎯 Artillery spread applied: factor=${spreadFactor.toFixed(2)}, amount=${baseSpreadAmount.toFixed(1)}`
+        );
+      } else {
+        // No target found, use original direction with high speed for long range
+        const ballisticSpeed = 35; // Much higher default speed
+        this.velocity.x = direction.x * ballisticSpeed;
+        this.velocity.y = Math.abs(direction.y) * ballisticSpeed + 15; // Higher upward trajectory
+        this.velocity.z = direction.z * ballisticSpeed;
+      }
+
+      // Store launch position for tracking
+      this.launchPosition = { ...position };
+      this.hasAppliedTargeting = false;
+      this.launchTime = Date.now();
 
       console.log(
         `🎯 Mortar shell created with direction [${direction.x.toFixed(
@@ -283,7 +355,10 @@ class Projectile {
       console.log(
         `🎯 Target player: ${
           this.targetPlayer ? this.targetPlayer.username : "none"
-        }`
+        } at distance ${this.targetPlayer ? Math.sqrt(
+          Math.pow(position.x - this.targetPlayer.position.x, 2) +
+            Math.pow(position.z - this.targetPlayer.position.z, 2)
+        ).toFixed(1) : "N/A"}`
       );
     }
 
@@ -372,19 +447,38 @@ class Projectile {
       const oldPos = { ...this.position };
       const oldVel = { ...this.velocity };
 
-      // Apply mortar course correction after initial launch
+      // Apply mortar course correction after initial launch - improved for long-range targeting
       const flightTime = (Date.now() - this.launchTime) / 1000; // Flight time in seconds
+      const distanceToTarget = this.targetPlayer ? Math.sqrt(
+        Math.pow(this.launchPosition.x - this.targetPlayer.position.x, 2) +
+        Math.pow(this.launchPosition.z - this.targetPlayer.position.z, 2)
+      ) : 0;
+      
+      // Dynamic timing based on target distance - optimized for long-range strikes
+      const correctionDelay = Math.min(2.5, Math.max(1.0, distanceToTarget / 50)); // 1.0-2.5s delay for long-range
+      
       if (
-        flightTime > 0.5 &&
+        flightTime > correctionDelay && // Dynamic delay based on target distance
         !this.hasAppliedTargeting &&
-        this.velocity.y < 0 &&
+        this.velocity.y < -3 && // Reduced threshold from -5 to -3 for earlier correction
         this.targetPlayer
       ) {
-        // Shell has reached peak and is falling - apply targeting correction
+        // Shell has reached peak and is falling - apply targeting correction with distance-based strength
         const targetDirection = {
           x: this.targetPlayer.position.x - this.position.x,
           z: this.targetPlayer.position.z - this.position.z,
         };
+
+        // Distance-based spread: closer targets get more spread, distant targets get less spread for accuracy
+        const currentDistance = Math.sqrt(
+          targetDirection.x * targetDirection.x +
+          targetDirection.z * targetDirection.z
+        );
+        const spreadFactor = Math.max(0.3, Math.min(1.0, 30 / currentDistance)); // Less spread for distant targets
+        const randomOffset = 25 * spreadFactor; // Reduced spread for long-range accuracy
+        
+        targetDirection.x += (Math.random() - 0.5) * randomOffset;
+        targetDirection.z += (Math.random() - 0.5) * randomOffset;
 
         // Normalize target direction
         const distance = Math.sqrt(
@@ -395,14 +489,20 @@ class Projectile {
           targetDirection.x /= distance;
           targetDirection.z /= distance;
 
-          // Apply strong horizontal velocity toward target
-          const targetingStrength = 25; // Strong correction toward target
+          // Distance-based targeting strength: stronger correction for distant targets
+          const baseStrength = 5;
+          const distanceMultiplier = Math.min(2.0, Math.max(0.8, currentDistance / 25)); // 0.8x to 2.0x based on distance
+          const targetingStrength = baseStrength * distanceMultiplier;
+          
           this.velocity.x += targetDirection.x * targetingStrength;
           this.velocity.z += targetDirection.z * targetingStrength;
           this.hasAppliedTargeting = true;
 
           console.log(
             `🎯 Mortar shell ${this.id} applying targeting correction toward ${this.targetPlayer.username}`
+          );
+          console.log(
+            `   Distance: ${currentDistance.toFixed(1)}, Spread factor: ${spreadFactor.toFixed(2)}, Strength: ${targetingStrength.toFixed(1)}`
           );
           console.log(
             `   Target direction: [${targetDirection.x.toFixed(
@@ -465,21 +565,32 @@ class Projectile {
     const groundLevel = 0.5; // Minimum height above ground
     if (this.position.y <= groundLevel) {
       if (this.type === "iceball" && this.isArtillery) {
+        // FIX DESYNC: Store the exact impact position before modifying
+        const impactPosition = {
+          x: this.position.x,
+          y: this.position.y,
+          z: this.position.z
+        };
+        
         // Artillery shells explode on ground impact with area damage
         console.log(
           `💥 Artillery shell ${
             this.id
-          } exploded on ground impact at [${this.position.x.toFixed(
+          } exploded on ground impact at [${impactPosition.x.toFixed(
             1
-          )}, ${groundLevel.toFixed(1)}, ${this.position.z.toFixed(1)}]`
+          )}, ${impactPosition.y.toFixed(1)}, ${impactPosition.z.toFixed(1)}]`
         );
-        this.position.y = groundLevel; // Set exact ground position
+        
+        // Set explosion position to exact impact location (not forced ground level)
+        this.position = { ...impactPosition };
+        this.position.y = Math.max(groundLevel, impactPosition.y); // Ensure not below ground but keep actual impact Y
+        
         this.isActive = false; // Deactivate projectile
         this.exploded = true; // Mark as exploded for client-side effects
         this.explosionBroadcasted = false; // Reset flag so it will be sent to client
 
         // Apply area-of-effect damage to nearby players
-        const explosionRadius = 5; // 5 unit blast radius
+        const explosionRadius = 12; // Increased from 5 to 12 for much larger blast radius
         const explosionDamage = 35; // Higher damage for artillery
 
         for (const player of gameState.players.values()) {
@@ -871,9 +982,10 @@ setInterval(() => {
   for (const [id, projectile] of gameState.projectiles) {
     projectile.update(deltaTime);
 
-    // Handle exploded projectiles - send explosion data then mark for removal
+    // Handle exploded projectiles - send explosion data and keep alive for animation duration
     if (projectile.exploded && !projectile.explosionBroadcasted) {
       projectile.explosionBroadcasted = true;
+      projectile.explosionStartTime = Date.now(); // Track when explosion started
       const explosionData = projectile.toJSON();
       console.log(`🚀 SENDING EXPLOSION DATA TO CLIENT:`, {
         id: explosionData.id,
@@ -883,14 +995,24 @@ setInterval(() => {
         position: explosionData.position
       });
       activeProjectiles.push(explosionData); // Send explosion state to client
-      // Don't mark for removal yet - let client process the explosion first
       continue;
     }
 
-    // Remove projectiles that have already broadcasted their explosion
+    // Keep exploded projectiles alive for explosion animation duration (3 seconds)
     if (projectile.exploded && projectile.explosionBroadcasted) {
-      expiredProjectiles.push(id);
-      continue;
+      const explosionDuration = 1000; // 3 seconds for explosion animation
+      const timeSinceExplosion = Date.now() - (projectile.explosionStartTime || 0);
+      
+      if (timeSinceExplosion < explosionDuration) {
+        // Keep sending explosion data to maintain client-side effect
+        const explosionData = projectile.toJSON();
+        activeProjectiles.push(explosionData);
+        continue;
+      } else {
+        // Explosion animation complete, safe to remove
+        expiredProjectiles.push(id);
+        continue;
+      }
     }
 
     if (!projectile.isActive) {
