@@ -27,10 +27,10 @@ const gameState = {
   players: new Map(),
   projectiles: new Map(),
   gameSettings: {
-    worldSize: 500, // Much larger world bounds
+    worldSize: 1500, // Massive world bounds for extreme long-range artillery
     maxPlayers: 20,
     projectileSpeed: 2, // Faster projectiles (12 units per second)
-    projectileLifetime: 30000, // 30 seconds lifetime
+    projectileLifetime: 60000, // 60 seconds lifetime for long-range strikes
   },
 };
 
@@ -277,7 +277,7 @@ class Projectile {
         
         // CREATE CIRCULAR SHOTGUN SPREAD AROUND TARGET - like a shotgun blast pattern
         // Generate random angle and distance for circular spread around target
-        const spreadRadius = Math.max(15, Math.min(25, targetDistance * 0.4)); // 15-25 unit radius around target
+        const spreadRadius = Math.max(8, Math.min(20, targetDistance * 0.15)); // Tighter spread for better accuracy
         const randomAngle = Math.random() * 2 * Math.PI; // Random angle 0-360 degrees
         const randomDistance = Math.random() * spreadRadius; // Random distance within radius
         
@@ -316,7 +316,7 @@ class Projectile {
         
         // Calculate required speed to reach target distance with spread consideration
         const baseSpeed = Math.sqrt((targetDistance * gravity) / Math.sin(2 * angleRad));
-        const adjustedSpeed = Math.max(12, Math.min(35, baseSpeed * 0.7)); // Reduced speed range for better accuracy
+        const adjustedSpeed = Math.max(15, Math.min(80, baseSpeed * 0.8)); // Much higher max speed for long-range
         
         // Calculate velocity components for accurate landing
         const horizontalSpeed = adjustedSpeed * Math.cos(angleRad);
@@ -327,13 +327,13 @@ class Projectile {
         this.velocity.z = toTarget.z * horizontalSpeed;
         
         console.log(
-          `🎯 Artillery spread applied: factor=${spreadFactor.toFixed(2)}, amount=${baseSpreadAmount.toFixed(1)}`
+          `🎯 Artillery circular spread applied: radius=${spreadRadius.toFixed(1)}, angle=${(randomAngle * 180 / Math.PI).toFixed(1)}°, distance=${randomDistance.toFixed(1)}`
         );
       } else {
         // No target found, use original direction with high speed for long range
-        const ballisticSpeed = 35; // Much higher default speed
+        const ballisticSpeed = 60; // Much higher default speed for extreme range
         this.velocity.x = direction.x * ballisticSpeed;
-        this.velocity.y = Math.abs(direction.y) * ballisticSpeed + 15; // Higher upward trajectory
+        this.velocity.y = Math.abs(direction.y) * ballisticSpeed + 20; // Higher upward trajectory
         this.velocity.z = direction.z * ballisticSpeed;
       }
 
@@ -454,65 +454,41 @@ class Projectile {
         Math.pow(this.launchPosition.z - this.targetPlayer.position.z, 2)
       ) : 0;
       
-      // Dynamic timing based on target distance - optimized for long-range strikes
-      const correctionDelay = Math.min(2.5, Math.max(1.0, distanceToTarget / 50)); // 1.0-2.5s delay for long-range
+      // MINIMAL mid-flight corrections to prevent desync - only for very long range
+      const correctionDelay = Math.min(3.0, Math.max(2.0, distanceToTarget / 100)); // 2.0-3.0s delay, longer for stability
       
       if (
-        flightTime > correctionDelay && // Dynamic delay based on target distance
+        flightTime > correctionDelay && // Longer delay for stability
         !this.hasAppliedTargeting &&
-        this.velocity.y < -3 && // Reduced threshold from -5 to -3 for earlier correction
-        this.targetPlayer
+        this.velocity.y < -8 && // Much lower threshold - only correct when falling fast
+        this.targetPlayer &&
+        distanceToTarget > 100 // Only apply corrections for very long-range shots
       ) {
-        // Shell has reached peak and is falling - apply targeting correction with distance-based strength
+        // Minimal correction for extreme long-range only
         const targetDirection = {
           x: this.targetPlayer.position.x - this.position.x,
           z: this.targetPlayer.position.z - this.position.z,
         };
 
-        // Distance-based spread: closer targets get more spread, distant targets get less spread for accuracy
         const currentDistance = Math.sqrt(
           targetDirection.x * targetDirection.x +
           targetDirection.z * targetDirection.z
         );
-        const spreadFactor = Math.max(0.3, Math.min(1.0, 30 / currentDistance)); // Less spread for distant targets
-        const randomOffset = 25 * spreadFactor; // Reduced spread for long-range accuracy
         
-        targetDirection.x += (Math.random() - 0.5) * randomOffset;
-        targetDirection.z += (Math.random() - 0.5) * randomOffset;
+        // Minimal correction with no random spread to prevent desync
+        if (currentDistance > 0) {
+          targetDirection.x /= currentDistance;
+          targetDirection.z /= currentDistance;
 
-        // Normalize target direction
-        const distance = Math.sqrt(
-          targetDirection.x * targetDirection.x +
-            targetDirection.z * targetDirection.z
-        );
-        if (distance > 0) {
-          targetDirection.x /= distance;
-          targetDirection.z /= distance;
-
-          // Distance-based targeting strength: stronger correction for distant targets
-          const baseStrength = 5;
-          const distanceMultiplier = Math.min(2.0, Math.max(0.8, currentDistance / 25)); // 0.8x to 2.0x based on distance
-          const targetingStrength = baseStrength * distanceMultiplier;
+          // Very weak correction strength to maintain trajectory stability
+          const targetingStrength = 2; // Much weaker correction
           
           this.velocity.x += targetDirection.x * targetingStrength;
           this.velocity.z += targetDirection.z * targetingStrength;
           this.hasAppliedTargeting = true;
 
           console.log(
-            `🎯 Mortar shell ${this.id} applying targeting correction toward ${this.targetPlayer.username}`
-          );
-          console.log(
-            `   Distance: ${currentDistance.toFixed(1)}, Spread factor: ${spreadFactor.toFixed(2)}, Strength: ${targetingStrength.toFixed(1)}`
-          );
-          console.log(
-            `   Target direction: [${targetDirection.x.toFixed(
-              2
-            )}, ${targetDirection.z.toFixed(2)}]`
-          );
-          console.log(
-            `   New velocity: [${this.velocity.x.toFixed(
-              2
-            )}, ${this.velocity.y.toFixed(2)}, ${this.velocity.z.toFixed(2)}]`
+            `🎯 Minimal long-range correction applied to shell ${this.id} at distance ${currentDistance.toFixed(1)}`
           );
         }
       }
@@ -565,10 +541,11 @@ class Projectile {
     const groundLevel = 0.5; // Minimum height above ground
     if (this.position.y <= groundLevel) {
       if (this.type === "iceball" && this.isArtillery) {
-        // FIX DESYNC: Store the exact impact position before modifying
-        const impactPosition = {
+        // CRITICAL FIX: Do NOT modify position after impact to prevent desync
+        // Store the exact impact position and use it for explosion
+        const exactImpactPosition = {
           x: this.position.x,
-          y: this.position.y,
+          y: Math.max(groundLevel, this.position.y), // Only ensure not below ground
           z: this.position.z
         };
         
@@ -576,14 +553,13 @@ class Projectile {
         console.log(
           `💥 Artillery shell ${
             this.id
-          } exploded on ground impact at [${impactPosition.x.toFixed(
+          } exploded on ground impact at [${exactImpactPosition.x.toFixed(
             1
-          )}, ${impactPosition.y.toFixed(1)}, ${impactPosition.z.toFixed(1)}]`
+          )}, ${exactImpactPosition.y.toFixed(1)}, ${exactImpactPosition.z.toFixed(1)}]`
         );
         
-        // Set explosion position to exact impact location (not forced ground level)
-        this.position = { ...impactPosition };
-        this.position.y = Math.max(groundLevel, impactPosition.y); // Ensure not below ground but keep actual impact Y
+        // Use exact impact position for explosion - NO MODIFICATIONS
+        this.position = exactImpactPosition;
         
         this.isActive = false; // Deactivate projectile
         this.exploded = true; // Mark as exploded for client-side effects
@@ -666,13 +642,13 @@ class Projectile {
       this.isActive = false;
     }
 
-    // Check world bounds
+    // Check world bounds - extended for long-range artillery
     const worldSize = gameState.gameSettings.worldSize;
     if (
       Math.abs(this.position.x) > worldSize ||
       Math.abs(this.position.z) > worldSize ||
-      this.position.y < -10 ||
-      this.position.y > 50
+      this.position.y < -20 ||
+      this.position.y > 100
     ) {
       console.log(
         `🌍 Projectile ${
@@ -1000,7 +976,7 @@ setInterval(() => {
 
     // Keep exploded projectiles alive for explosion animation duration (3 seconds)
     if (projectile.exploded && projectile.explosionBroadcasted) {
-      const explosionDuration = 1000; // 3 seconds for explosion animation
+      const explosionDuration = 3000; // 3 seconds for explosion animation
       const timeSinceExplosion = Date.now() - (projectile.explosionStartTime || 0);
       
       if (timeSinceExplosion < explosionDuration) {

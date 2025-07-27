@@ -52,10 +52,10 @@ export function GameEntry({ onPlayNow }: GameEntryProps) {
       <Card className="w-full max-w-md bg-black/40 backdrop-blur-sm border-purple-500/30">
         <CardHeader className="text-center">
           <CardTitle className="text-3xl font-bold text-white mb-2">
-            🧙‍♂️ Wizard Realm
+            🧙‍♂️ Hairy Wizards
           </CardTitle>
           <CardDescription className="text-purple-200">
-            Enter the magical world and begin your adventure
+           Do battle with other hairy wizards
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-6">
