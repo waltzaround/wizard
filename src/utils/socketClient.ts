@@ -7,8 +7,11 @@ export interface Player {
   rotation: { x: number; y: number; z: number };
   health: number;
   mana: number;
+  stamina: number;
   isAlive: boolean;
   color: number;
+  isJumping?: boolean;
+  isDashing?: boolean;
 }
 
 export interface Projectile {
@@ -66,6 +69,12 @@ export class SocketClient {
     | null = null;
   private onPlayerStatsUpdated:
     | ((data: { playerId: string; health: number; mana: number }) => void)
+    | null = null;
+  private onPlayerJumped:
+    | ((data: { playerId: string; stamina: number; jumpStartTime: number }) => void)
+    | null = null;
+  private onPlayerDashed:
+    | ((data: { playerId: string; stamina: number; dashStartTime: number; dashDirection: { x: number; z: number } }) => void)
     | null = null;
 
   connect(serverUrl?: string): Promise<void> {
@@ -144,6 +153,14 @@ export class SocketClient {
       this.socket.on("player-stats-updated", (data) => {
         this.onPlayerStatsUpdated?.(data);
       });
+
+      this.socket.on("player-jumped", (data) => {
+        this.onPlayerJumped?.(data);
+      });
+
+      this.socket.on("player-dashed", (data) => {
+        this.onPlayerDashed?.(data);
+      });
     });
   }
 
@@ -178,6 +195,16 @@ export class SocketClient {
   ) {
     if (!this.socket || !this.isConnected) return;
     this.socket.emit("cast-spell", { position, direction, spellType });
+  }
+
+  playerJump() {
+    if (!this.socket || !this.isConnected) return;
+    this.socket.emit("player-jump");
+  }
+
+  playerDash(direction: { x: number; z: number }) {
+    if (!this.socket || !this.isConnected) return;
+    this.socket.emit("player-dash", { direction });
   }
 
   // Event listener setters
@@ -272,6 +299,18 @@ export class SocketClient {
     }) => void
   ) {
     this.socket?.on("player-respawned-other", callback);
+  }
+
+  setOnPlayerJumped(
+    callback: (data: { playerId: string; stamina: number; jumpStartTime: number }) => void
+  ) {
+    this.onPlayerJumped = callback;
+  }
+
+  setOnPlayerDashed(
+    callback: (data: { playerId: string; stamina: number; dashStartTime: number; dashDirection: { x: number; z: number } }) => void
+  ) {
+    this.onPlayerDashed = callback;
   }
 
   // Getters

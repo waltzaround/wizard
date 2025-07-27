@@ -93,13 +93,14 @@ export function SpellToolbar({ onSpellCast, isConnected }: SpellToolbarProps) {
         if (spellIndex < SPELLS.length) {
           setSelectedSpell(spellIndex);
         }
-      }
-
-      // Cast selected spell with Space or Enter
-      if ((key === " " || key === "Enter") && isConnected) {
+             // Cast selected spell with Space or Enter
+      if (isConnected) {
         event.preventDefault();
         castSelectedSpell();
       }
+      }
+
+ 
     };
 
     window.addEventListener("keydown", handleKeyPress);

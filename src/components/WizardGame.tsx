@@ -17,6 +17,7 @@ interface GameState {
   playerId?: string;
   playerHealth: number;
   playerMana: number;
+  playerStamina: number;
 }
 
 interface WizardGameProps {
@@ -78,6 +79,12 @@ function updateGame(gameState: GameState) {
   const { wizard, keys, camera, cameraOffset } = gameState;
   const moveSpeed = 0.1;
 
+  // Client-side stamina regeneration (20 stamina per second, same as server)
+  const deltaTime = 1/60; // Assuming 60 FPS
+  if (typeof gameState.playerStamina === 'number' && gameState.playerStamina < 100) {
+    gameState.playerStamina = Math.min(100, gameState.playerStamina + 20 * deltaTime);
+  }
+
   // Calculate camera's forward direction (projected onto the ground plane)
   const cameraDirection = new THREE.Vector3();
   camera.getWorldDirection(cameraDirection);
@@ -111,9 +118,20 @@ function updateGame(gameState: GameState) {
     isMoving = true;
   }
 
-  // Apply movement
+  // Apply movement with boundary checking
   if (isMoving) {
-    wizard.position.add(moveVector);
+    const newPosition = wizard.position.clone().add(moveVector);
+    
+    // Define arena boundaries (arena is 200x200, so boundaries are -100 to +100)
+    const arenaSize = 100; // Half of the 200x200 arena
+    const boundary = arenaSize - 2; // Leave 2 units margin from edge
+    
+    // Clamp position to stay within boundaries
+    newPosition.x = Math.max(-boundary, Math.min(boundary, newPosition.x));
+    newPosition.z = Math.max(-boundary, Math.min(boundary, newPosition.z));
+    
+    // Apply the clamped position
+    wizard.position.copy(newPosition);
   }
 
   // Make wizard always face camera direction
@@ -133,7 +151,7 @@ function updateGame(gameState: GameState) {
   // Staff orb animation removed to avoid confusion with projectiles
 }
 
-function updateMultiplayerObjects(gameState: GameState) {
+function updateMultiplayerObjects(gameState: GameState, setPlayerStats: React.Dispatch<React.SetStateAction<{ health: number; mana: number; stamina: number }>>) {
   // Send player position update to server
   if (socketClient.getIsConnected() && gameState.playerId) {
     const position = {
@@ -150,6 +168,11 @@ function updateMultiplayerObjects(gameState: GameState) {
 
     socketClient.updatePlayer(position, rotation);
   }
+
+  // Update stamina UI (throttled to avoid excessive updates)
+  if (Math.random() < 0.1) { // Update UI roughly 6 times per second instead of 60
+    setPlayerStats((prev) => ({ ...prev, stamina: gameState.playerStamina }));
+  }
 }
 
 function updateProjectiles(
@@ -164,6 +187,8 @@ function updateProjectiles(
         console.log(
           `🔥 Artillery shell ${update.id}: exploded=${
             update.exploded
+          }, explosionBroadcasted=${
+            (update as any).explosionBroadcasted
           }, hasExploded=${
             projectileGroup.userData.hasExploded
           }, pos=[${update.position.x.toFixed(1)}, ${update.position.y.toFixed(
@@ -200,9 +225,7 @@ function updateProjectiles(
 
       // Simple rotation effects based on type
       if (update.type === "fireball") {
-        // Fireball rotation and flame particle animation
-        projectileGroup.rotation.y += 0.1;
-
+        // Fireball flame particle animation (removed rotation)
         // Animate flame particles if they exist
         const time = Date.now() * 0.01;
         projectileGroup.children.forEach((child, index) => {
@@ -456,7 +479,7 @@ export function WizardGame({ username, onExitGame }: WizardGameProps) {
   // Multiplayer state
   const [isConnected, setIsConnected] = useState(false);
   const [connectionError, setConnectionError] = useState<string | null>(null);
-  const [playerStats, setPlayerStats] = useState({ health: 100, mana: 100 });
+  const [playerStats, setPlayerStats] = useState({ health: 100, mana: 100, stamina: 100 });
   const [showDeathScreen, setShowDeathScreen] = useState(false);
   const [deathMessage, setDeathMessage] = useState("");
   const mountRef = useRef<HTMLDivElement>(null);
@@ -513,8 +536,8 @@ export function WizardGame({ username, onExitGame }: WizardGameProps) {
     directionalLight.shadow.mapSize.height = 2048;
     scene.add(directionalLight);
 
-    // Create ground plane with grid
-    const groundGeometry = new THREE.PlaneGeometry(100, 100);
+    // Create ground plane with grid (made bigger)
+    const groundGeometry = new THREE.PlaneGeometry(200, 200);
     const groundMaterial = new THREE.MeshLambertMaterial({ color: 0x90ee90 });
     const ground = new THREE.Mesh(groundGeometry, groundMaterial);
     ground.rotation.x = -Math.PI / 2;
@@ -524,7 +547,7 @@ export function WizardGame({ username, onExitGame }: WizardGameProps) {
     // Create custom grid for better visibility
     const createGrid = () => {
       const gridGroup = new THREE.Group();
-      const gridSize = 50;
+      const gridSize = 100; // Increased from 50 to match new ground size
       const gridStep = 2;
       const gridColor = 0x333333;
 
@@ -586,6 +609,7 @@ export function WizardGame({ username, onExitGame }: WizardGameProps) {
       projectiles: new Map(),
       playerHealth: 100,
       playerMana: 100,
+      playerStamina: 100,
     };
 
     // Store camera angles in gameState so they can be accessed in updateGame
@@ -619,6 +643,71 @@ export function WizardGame({ username, onExitGame }: WizardGameProps) {
           // If not in pointer lock, exit the game
           onExitGame();
         }
+        return;
+      }
+
+      // Handle jump with Space key
+      if (event.code === " ") {
+        if (socketClient.getIsConnected()) {
+          socketClient.playerJump();
+          console.log("🦘 Jump requested");
+        }
+        event.preventDefault();
+        return;
+      }
+
+      // Handle dash with Shift key
+      if (event.code === "ShiftLeft" || event.code === "ShiftRight") {
+        if (socketClient.getIsConnected()) {
+          // Calculate dash direction based on current movement keys
+          const dashDirection = { x: 0, z: 0 };
+          
+          // Get camera direction for dash
+          const cameraDirection = new THREE.Vector3();
+          gameState.camera.getWorldDirection(cameraDirection);
+          cameraDirection.y = 0; // Remove vertical component
+          cameraDirection.normalize();
+          
+          // Calculate camera's right direction
+          const cameraRight = new THREE.Vector3();
+          cameraRight.crossVectors(cameraDirection, new THREE.Vector3(0, 1, 0));
+          cameraRight.normalize();
+          
+          // Determine dash direction based on movement keys
+          if (keys["KeyW"]) {
+            dashDirection.x += cameraDirection.x;
+            dashDirection.z += cameraDirection.z;
+          }
+          if (keys["KeyS"]) {
+            dashDirection.x -= cameraDirection.x;
+            dashDirection.z -= cameraDirection.z;
+          }
+          if (keys["KeyA"]) {
+            dashDirection.x -= cameraRight.x;
+            dashDirection.z -= cameraRight.z;
+          }
+          if (keys["KeyD"]) {
+            dashDirection.x += cameraRight.x;
+            dashDirection.z += cameraRight.z;
+          }
+          
+          // If no movement keys are pressed, dash forward
+          if (dashDirection.x === 0 && dashDirection.z === 0) {
+            dashDirection.x = cameraDirection.x;
+            dashDirection.z = cameraDirection.z;
+          }
+          
+          // Normalize dash direction
+          const length = Math.sqrt(dashDirection.x * dashDirection.x + dashDirection.z * dashDirection.z);
+          if (length > 0) {
+            dashDirection.x /= length;
+            dashDirection.z /= length;
+          }
+          
+          socketClient.playerDash(dashDirection);
+          console.log("💨 Dash requested with direction:", dashDirection);
+        }
+        event.preventDefault();
         return;
       }
 
@@ -748,7 +837,7 @@ export function WizardGame({ username, onExitGame }: WizardGameProps) {
     const animate = () => {
       animationIdRef.current = requestAnimationFrame(animate);
       updateGame(gameState);
-      updateMultiplayerObjects(gameState);
+      updateMultiplayerObjects(gameState, setPlayerStats);
       renderer.render(scene, camera);
     };
     animate();
@@ -876,9 +965,10 @@ export function WizardGame({ username, onExitGame }: WizardGameProps) {
         </div>
       )}
 
-      {/* Health Display */}
+      {/* Health and Stamina Display */}
       <div className="absolute top-4 left-4 bg-black/50 backdrop-blur-sm rounded-lg p-4 text-white">
-        <div className="flex items-center gap-3">
+        {/* Health Bar */}
+        <div className="flex items-center gap-3 mb-3">
           <div className="text-sm font-medium">Health:</div>
           <div className="w-32 h-3 bg-gray-700 rounded-full overflow-hidden">
             <div
@@ -888,9 +978,28 @@ export function WizardGame({ username, onExitGame }: WizardGameProps) {
           </div>
           <div className="text-sm font-mono">{playerStats.health}/100</div>
         </div>
+        
+        {/* Stamina Bar */}
+        <div className="flex items-center gap-3">
+          <div className="text-sm font-medium">Stamina:</div>
+          <div className="w-32 h-3 bg-gray-700 rounded-full overflow-hidden">
+            <div
+              className="h-full bg-gradient-to-r from-yellow-500 to-blue-500 transition-all duration-300"
+              style={{ width: `${(playerStats.stamina / 100) * 100}%` }}
+            />
+          </div>
+          <div className="text-sm font-mono">{Math.round(playerStats.stamina)}/100</div>
+        </div>
+        
+        {/* Warning Messages */}
         {playerStats.health <= 25 && (
           <div className="text-red-400 text-xs mt-1 animate-pulse">
             ⚠️ Low Health!
+          </div>
+        )}
+        {playerStats.stamina <= 25 && (
+          <div className="text-yellow-400 text-xs mt-1 animate-pulse">
+            ⚡ Low Stamina!
           </div>
         )}
       </div>
@@ -911,12 +1020,18 @@ export function WizardGame({ username, onExitGame }: WizardGameProps) {
 
       // Set up event handlers
       socketClient.setOnGameJoined((data) => {
+        console.log("🎮 Received game-joined data:", data);
+        console.log("🎮 Player data:", data.player);
+        console.log("🎮 Stamina value:", data.player.stamina, "Type:", typeof data.player.stamina);
+        
         gameState.playerId = data.playerId;
         gameState.playerHealth = data.player.health;
         gameState.playerMana = data.player.mana;
-        setPlayerStats({ health: data.player.health, mana: data.player.mana });
+        gameState.playerStamina = data.player.stamina;
+        setPlayerStats({ health: data.player.health, mana: data.player.mana, stamina: data.player.stamina });
         setIsConnected(true);
         console.log("Joined game as:", data.player.username);
+        console.log("🎮 Final gameState.playerStamina:", gameState.playerStamina);
       });
 
       socketClient.setOnExistingPlayers((players) => {
@@ -976,6 +1091,9 @@ export function WizardGame({ username, onExitGame }: WizardGameProps) {
         if (data.playerId === gameState.playerId) {
           gameState.playerHealth = data.health;
           setPlayerStats((prev) => ({ ...prev, health: data.health }));
+        } else {
+          // Update other player's health bar
+          updateOtherPlayerHealth(gameState, data.playerId, data.health);
         }
       });
 
@@ -983,7 +1101,10 @@ export function WizardGame({ username, onExitGame }: WizardGameProps) {
         if (data.playerId === gameState.playerId) {
           gameState.playerHealth = data.health;
           gameState.playerMana = data.mana;
-          setPlayerStats({ health: data.health, mana: data.mana });
+          setPlayerStats((prev) => ({ ...prev, health: data.health, mana: data.mana }));
+        } else {
+          // Update other player's health bar
+          updateOtherPlayerHealth(gameState, data.playerId, data.health);
         }
       });
 
@@ -1011,7 +1132,8 @@ export function WizardGame({ username, onExitGame }: WizardGameProps) {
           );
           gameStateRef.current.playerHealth = data.health;
           gameStateRef.current.playerMana = data.mana;
-          setPlayerStats({ health: data.health, mana: data.mana });
+          gameStateRef.current.playerStamina = 100; // Reset stamina on respawn
+          setPlayerStats({ health: data.health, mana: data.mana, stamina: 100 });
         }
         setShowDeathScreen(false);
         setDeathMessage("");
@@ -1042,9 +1164,39 @@ export function WizardGame({ username, onExitGame }: WizardGameProps) {
           );
           if (otherPlayer) {
             otherPlayer.visible = true;
+            // Update position to respawn location
+            otherPlayer.position.set(
+              data.position.x,
+              data.position.y,
+              data.position.z
+            );
+            // Update health bar to full health (100)
+            updateOtherPlayerHealth(gameStateRef.current, data.playerId, 100);
             console.log(`Showed respawned player: ${data.playerId}`);
           }
         }
+      });
+
+      // Handle jump events
+      socketClient.setOnPlayerJumped((data) => {
+        if (data.playerId === gameState.playerId) {
+          // Update own stamina
+          gameState.playerStamina = data.stamina;
+          setPlayerStats((prev) => ({ ...prev, stamina: data.stamina }));
+          console.log(`🦘 You jumped! Stamina: ${data.stamina}`);
+        }
+        // Could add visual effects for other players jumping here
+      });
+
+      // Handle dash events
+      socketClient.setOnPlayerDashed((data) => {
+        if (data.playerId === gameState.playerId) {
+          // Update own stamina
+          gameState.playerStamina = data.stamina;
+          setPlayerStats((prev) => ({ ...prev, stamina: data.stamina }));
+          console.log(`💨 You dashed! Stamina: ${data.stamina}`);
+        }
+        // Could add visual effects for other players dashing here
       });
 
       // Join the game
@@ -1394,6 +1546,60 @@ export function WizardGame({ username, onExitGame }: WizardGameProps) {
     animateTeleport();
   }
 
+  // Create health bar for other players
+  function createHealthBar(health: number): THREE.Sprite {
+    const canvas = document.createElement("canvas");
+    const context = canvas.getContext("2d")!;
+    canvas.width = 200;
+    canvas.height = 32;
+    
+    // Clear canvas
+    context.clearRect(0, 0, canvas.width, canvas.height);
+    
+    // Background
+    context.fillStyle = "rgba(0, 0, 0, 0.6)";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    
+    // Health bar background
+    const barWidth = 180;
+    const barHeight = 16;
+    const barX = 10;
+    const barY = 8;
+    
+    context.fillStyle = "rgba(100, 100, 100, 0.8)";
+    context.fillRect(barX, barY, barWidth, barHeight);
+    
+    // Health bar fill
+    const healthPercent = Math.max(0, Math.min(100, health)) / 100;
+    const fillWidth = barWidth * healthPercent;
+    
+    // Color based on health percentage
+    let healthColor;
+    if (healthPercent > 0.6) {
+      healthColor = "#4ade80"; // Green
+    } else if (healthPercent > 0.3) {
+      healthColor = "#fbbf24"; // Yellow
+    } else {
+      healthColor = "#ef4444"; // Red
+    }
+    
+    context.fillStyle = healthColor;
+    context.fillRect(barX, barY, fillWidth, barHeight);
+    
+    // Health text
+    context.fillStyle = "white";
+    context.font = "12px Arial";
+    context.textAlign = "center";
+    context.fillText(`${Math.round(health)}/100`, canvas.width / 2, barY + barHeight - 2);
+    
+    const texture = new THREE.CanvasTexture(canvas);
+    const healthBarMaterial = new THREE.SpriteMaterial({ map: texture });
+    const healthBarSprite = new THREE.Sprite(healthBarMaterial);
+    healthBarSprite.scale.set(3, 0.5, 1);
+    
+    return healthBarSprite;
+  }
+
   // Create other player function
   function createOtherPlayer(gameState: GameState, player: Player) {
     const otherWizard = createWizard();
@@ -1439,14 +1645,28 @@ export function WizardGame({ username, onExitGame }: WizardGameProps) {
     const texture = new THREE.CanvasTexture(canvas);
     const labelMaterial = new THREE.SpriteMaterial({ map: texture });
     const label = new THREE.Sprite(labelMaterial);
-    label.position.set(0, 6, 0);
+    label.position.set(0, 7.5, 0);
     label.scale.set(4, 1, 1);
+    label.name = "usernameLabel";
     otherWizard.add(label);
+
+    // Add health bar
+    const healthBar = createHealthBar(player.health);
+    healthBar.position.set(0, 6.5, 0);
+    healthBar.name = "healthBar";
+    otherWizard.add(healthBar);
+
+    // Store player data for health updates
+    otherWizard.userData = {
+      playerId: player.id,
+      username: player.username,
+      health: player.health
+    };
 
     gameState.otherPlayers.set(player.id, otherWizard);
     gameState.scene.add(otherWizard);
 
-    console.log(`Added other player: ${player.username}`);
+    console.log(`Added other player: ${player.username} with health: ${player.health}`);
   }
 
   // Remove other player function
@@ -1459,12 +1679,38 @@ export function WizardGame({ username, onExitGame }: WizardGameProps) {
     }
   }
 
+  // Update other player health bar
+  function updateOtherPlayerHealth(gameState: GameState, playerId: string, health: number) {
+    const otherWizard = gameState.otherPlayers.get(playerId);
+    if (otherWizard) {
+      // Update stored health data
+      otherWizard.userData.health = health;
+      
+      // Find and update the health bar
+      const healthBar = otherWizard.getObjectByName("healthBar") as THREE.Sprite;
+      if (healthBar) {
+        // Create new health bar texture
+        const newHealthBar = createHealthBar(health);
+        
+        // Update the material with new texture
+        if (healthBar.material instanceof THREE.SpriteMaterial) {
+          // Dispose old texture to prevent memory leaks
+          if (healthBar.material.map) {
+            healthBar.material.map.dispose();
+          }
+          healthBar.material.map = newHealthBar.material.map;
+          healthBar.material.needsUpdate = true;
+        }
+      }
+    }
+  }
+
   // Update other player function
   function updateOtherPlayer(
     gameState: GameState,
     playerId: string,
-    position: any,
-    rotation: any
+    position: { x: number; y: number; z: number },
+    rotation: { x: number; y: number; z: number }
   ) {
     const otherWizard = gameState.otherPlayers.get(playerId);
     if (otherWizard) {
@@ -1511,7 +1757,7 @@ export function WizardGame({ username, onExitGame }: WizardGameProps) {
     const projectileGroup = new THREE.Group();
     projectileGroup.add(projectileMesh);
 
-    // Add flame particles for fireball
+    // Add flame particles for fireball (but no orbiting)
     if (projectile.type === "fireball") {
       // Create flame particles around the fireball
       for (let i = 0; i < 8; i++) {

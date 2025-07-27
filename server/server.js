@@ -29,7 +29,7 @@ const gameState = {
   gameSettings: {
     worldSize: 500, // Much larger world bounds
     maxPlayers: 20,
-    projectileSpeed: 2, // Very slow projectiles (2 units per second)
+    projectileSpeed: 2, // Faster projectiles (12 units per second)
     projectileLifetime: 30000, // 30 seconds lifetime
   },
 };
@@ -44,9 +44,20 @@ class Player {
     this.rotation = { x: 0, y: 0, z: 0 };
     this.health = 100;
     this.mana = 100;
+    this.stamina = 100;
+    this.maxStamina = 100;
     this.isAlive = true;
     this.lastUpdate = Date.now();
     this.color = this.generateRandomColor();
+    
+    // Movement abilities
+    this.isJumping = false;
+    this.jumpStartTime = 0;
+    this.jumpDuration = 800; // 800ms jump duration
+    this.isDashing = false;
+    this.dashStartTime = 0;
+    this.dashDuration = 200; // 200ms dash duration
+    this.dashDirection = { x: 0, z: 0 };
   }
 
   generateRandomColor() {
@@ -97,11 +108,62 @@ class Player {
     }, 5000);
   }
 
+  // Jump ability
+  jump() {
+    const jumpCost = 25; // 25 stamina per jump
+    
+    if (this.stamina >= jumpCost && !this.isJumping && this.isAlive) {
+      this.stamina -= jumpCost;
+      this.isJumping = true;
+      this.jumpStartTime = Date.now();
+      
+      console.log(`🦘 Player ${this.username} jumped! Stamina: ${this.stamina}`);
+      return true;
+    }
+    return false;
+  }
+
+  // Dash ability
+  dash(direction) {
+    const dashCost = 35; // 35 stamina per dash
+    
+    if (this.stamina >= dashCost && !this.isDashing && this.isAlive) {
+      this.stamina -= dashCost;
+      this.isDashing = true;
+      this.dashStartTime = Date.now();
+      this.dashDirection = { ...direction };
+      
+      console.log(`💨 Player ${this.username} dashed! Stamina: ${this.stamina}`);
+      return true;
+    }
+    return false;
+  }
+
+  // Update movement abilities (called each game tick)
+  updateMovementAbilities() {
+    const now = Date.now();
+    
+    // Update jump state
+    if (this.isJumping && (now - this.jumpStartTime) >= this.jumpDuration) {
+      this.isJumping = false;
+    }
+    
+    // Update dash state
+    if (this.isDashing && (now - this.dashStartTime) >= this.dashDuration) {
+      this.isDashing = false;
+    }
+  }
+
   respawn() {
     // Reset health and status
     this.health = 100;
     this.mana = 100;
+    this.stamina = 100;
     this.isAlive = true;
+    
+    // Reset movement abilities
+    this.isJumping = false;
+    this.isDashing = false;
 
     // Respawn within the green square (grid area)
     // The grid appears to be around 50x50 units based on the game setup
@@ -143,8 +205,11 @@ class Player {
       rotation: this.rotation,
       health: this.health,
       mana: this.mana,
+      stamina: this.stamina,
       isAlive: this.isAlive,
       color: this.color,
+      isJumping: this.isJumping,
+      isDashing: this.isDashing,
     };
   }
 }
@@ -169,6 +234,7 @@ class Projectile {
       this.homingStrength = 0.3; // Weak tracking (0.0 = no homing, 1.0 = strong homing)
       this.homingRange = Infinity; // No range limit - track any target
       this.targetId = null;
+      this.speed = this.speed * 2; // Fireballs are 2x faster than other projectiles
     }
 
     // Artillery properties for iceball (mortar-style)
@@ -178,7 +244,7 @@ class Projectile {
       // For mortar artillery, we need special physics
       this.velocity = { ...direction };
       // Scale velocity appropriately for mortar trajectory
-      const ballisticSpeed = this.speed * 15; // Higher speed for mortar launch
+      const ballisticSpeed = this.speed * 1.5; // Reduced from 2 to 1.5 for proper ground impact
       this.velocity.x *= ballisticSpeed;
       this.velocity.y *= ballisticSpeed; // Strong upward velocity
       this.velocity.z *= ballisticSpeed;
@@ -237,10 +303,11 @@ class Projectile {
 
     console.log(`🔄 Updating projectile ${this.id} (type: ${this.type})`);
 
-    // Apply homing behavior for fireballs
+    // Apply homing behavior for fireballs BEFORE movement calculation
     if (this.type === "fireball") {
       console.log(`🔥 Applying homing to fireball ${this.id}`);
       this.updateHoming();
+      console.log(`🚀 Fireball speed after homing: ${this.speed}`);
     }
 
     // Laser beam sweeping logic
@@ -391,7 +458,7 @@ class Projectile {
         2
       )}, ${this.direction.z.toFixed(2)}]`
     );
-    console.log(`Speed: ${this.speed.toFixed(2)}`);
+    console.log(`💨 Movement Speed: ${this.speed.toFixed(2)} (should be 24 for fireballs)`);
     console.log(`Delta time: ${deltaTime.toFixed(2)}`);
 
     // Handle ground collision
@@ -508,6 +575,10 @@ class Projectile {
   }
 
   updateHoming() {
+    // Apply fireball speed boost during homing (every frame)
+    this.speed = gameState.gameSettings.projectileSpeed * 2;
+    console.log(`🚀 Fireball speed boosted to: ${this.speed} (base: ${gameState.gameSettings.projectileSpeed})`);
+
     // Find the closest enemy player (no range limit)
     let closestTarget = null;
     let closestDistance = Infinity;
@@ -667,9 +738,11 @@ io.on("connection", (socket) => {
     gameState.players.set(socket.id, player);
 
     // Send initial game state to new player
+    const playerData = player.toJSON();
+    console.log(`🎮 Sending player data to ${username}:`, playerData);
     socket.emit("game-joined", {
       playerId: socket.id,
-      player: player.toJSON(),
+      player: playerData,
       gameSettings: gameState.gameSettings,
     });
 
@@ -679,6 +752,16 @@ io.on("connection", (socket) => {
       .map((p) => p.toJSON());
 
     socket.emit("existing-players", existingPlayers);
+
+    // Send existing projectiles to new player
+    const existingProjectiles = Array.from(gameState.projectiles.values())
+      .filter((p) => p.isActive)
+      .map((p) => p.toJSON());
+
+    if (existingProjectiles.length > 0) {
+      socket.emit("existing-projectiles", existingProjectiles);
+      console.log(`Sent ${existingProjectiles.length} existing projectiles to new player ${username}`);
+    }
 
     // Notify other players of new player
     socket.broadcast.emit("player-joined", player.toJSON());
@@ -727,6 +810,39 @@ io.on("connection", (socket) => {
     io.emit("projectile-created", projectile.toJSON());
   });
 
+  // Player jump action
+  socket.on("player-jump", () => {
+    const player = gameState.players.get(socket.id);
+    if (!player || !player.isAlive) return;
+
+    if (player.jump()) {
+      // Broadcast jump to all players
+      io.emit("player-jumped", {
+        playerId: socket.id,
+        stamina: player.stamina,
+        jumpStartTime: player.jumpStartTime,
+      });
+    }
+  });
+
+  // Player dash action
+  socket.on("player-dash", (data) => {
+    const player = gameState.players.get(socket.id);
+    if (!player || !player.isAlive) return;
+
+    const direction = data.direction || { x: 0, z: 0 };
+
+    if (player.dash(direction)) {
+      // Broadcast dash to all players
+      io.emit("player-dashed", {
+        playerId: socket.id,
+        stamina: player.stamina,
+        dashStartTime: player.dashStartTime,
+        dashDirection: player.dashDirection,
+      });
+    }
+  });
+
   // Player disconnection
   socket.on("disconnect", () => {
     const player = gameState.players.get(socket.id);
@@ -755,14 +871,27 @@ setInterval(() => {
   for (const [id, projectile] of gameState.projectiles) {
     projectile.update(deltaTime);
 
-    // --- ARTILLERY EXPLOSION BROADCAST FIX ---
+    // Handle exploded projectiles - send explosion data then mark for removal
     if (projectile.exploded && !projectile.explosionBroadcasted) {
-      // Keep projectile for one more tick to broadcast explosion
       projectile.explosionBroadcasted = true;
-      activeProjectiles.push(projectile.toJSON());
+      const explosionData = projectile.toJSON();
+      console.log(`🚀 SENDING EXPLOSION DATA TO CLIENT:`, {
+        id: explosionData.id,
+        type: explosionData.type,
+        exploded: explosionData.exploded,
+        explosionBroadcasted: explosionData.explosionBroadcasted,
+        position: explosionData.position
+      });
+      activeProjectiles.push(explosionData); // Send explosion state to client
+      // Don't mark for removal yet - let client process the explosion first
       continue;
     }
-    // --- END FIX ---
+
+    // Remove projectiles that have already broadcasted their explosion
+    if (projectile.exploded && projectile.explosionBroadcasted) {
+      expiredProjectiles.push(id);
+      continue;
+    }
 
     if (!projectile.isActive) {
       expiredProjectiles.push(id);
@@ -802,12 +931,6 @@ setInterval(() => {
 
   // Remove expired projectiles
   for (const id of expiredProjectiles) {
-    // Only remove if not waiting to broadcast explosion
-    const projectile = gameState.projectiles.get(id);
-    if (projectile && projectile.exploded && !projectile.explosionBroadcasted) {
-      // Don't remove yet
-      continue;
-    }
     gameState.projectiles.delete(id);
   }
 
@@ -817,8 +940,19 @@ setInterval(() => {
     expired: expiredProjectiles,
   });
 
-  // Regenerate mana for all players
+  // Update all players
   for (const player of gameState.players.values()) {
+    if (player.isAlive) {
+      // Update movement abilities
+      player.updateMovementAbilities();
+      
+      // Regenerate stamina
+      if (player.stamina < player.maxStamina) {
+        player.stamina = Math.min(player.maxStamina, player.stamina + 20 * deltaTime); // 20 stamina per second
+      }
+    }
+    
+    // Regenerate mana for all players (alive or dead)
     if (player.mana < 100) {
       player.mana = Math.min(100, player.mana + 0.5); // Regenerate mana
     }
