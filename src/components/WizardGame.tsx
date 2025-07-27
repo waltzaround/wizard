@@ -314,6 +314,30 @@ function createExplosionEffect(
     )}, ${position.y.toFixed(1)}, ${position.z.toFixed(1)}]`
   );
 
+  // Play randomized explosion sound effect
+  const playExplosionSound = () => {
+    try {
+      // Randomly select explosion sound (explosion.mp3 to explosion4.mp3)
+      const explosionNumber = Math.floor(Math.random() * 4) + 1;
+      const soundFile = explosionNumber === 1 ? '/explosion.mp3' : `/explosion${explosionNumber}.mp3`;
+      
+      // Create audio with random volume between 0.2 and 0.6
+      const explosionAudio = new Audio(soundFile);
+      explosionAudio.volume = 0.2 + Math.random() * 0.4; // Random volume 20%-60%
+      
+      explosionAudio.play().catch((error) => {
+        console.warn(`Failed to play explosion sound ${soundFile}:`, error);
+      });
+      
+      console.log(`🔊 Playing explosion sound: ${soundFile} at volume ${(explosionAudio.volume * 100).toFixed(0)}%`);
+    } catch (error) {
+      console.warn('Failed to load explosion sound:', error);
+    }
+  };
+
+  // Play the explosion sound
+  playExplosionSound();
+
   // Create explosion particles - more particles for bigger explosion
   const particleCount = 40; // Doubled from 20
   const explosionGroup = new THREE.Group();
@@ -501,6 +525,51 @@ export function WizardGame({ username, onExitGame }: WizardGameProps) {
 
     // Store mount element reference to avoid React conflicts
     const mountElement = mountRef.current;
+
+    // Play intro music followed by Harry Potter theme music
+    const playGameAudio = () => {
+      try {
+        // First play the intro music
+        const introAudio = new Audio('/intro.mp3');
+        introAudio.volume = 0.3; // Set volume to 30%
+        
+        // Set up theme music to play after intro
+        const themeAudio = new Audio('/harry.mp3');
+        themeAudio.volume = 0.1; // Set volume to 30%
+        themeAudio.loop = true; // Loop the theme music
+        
+        // When intro ends, start theme music
+        introAudio.addEventListener('ended', () => {
+          console.log('🎵 Intro finished, starting Harry Potter theme music');
+          themeAudio.play().catch((error) => {
+            console.warn('Failed to start theme music after intro:', error);
+          });
+        });
+        
+        // Start playing intro
+        introAudio.play().then(() => {
+          console.log('🎵 Intro music started');
+        }).catch((error) => {
+          console.log('Audio autoplay prevented by browser:', error);
+          // Add click listener to play audio on first user interaction
+          const playOnInteraction = () => {
+            introAudio.play().then(() => {
+              console.log('🎵 Intro music started after user interaction');
+            }).catch(console.error);
+            document.removeEventListener('click', playOnInteraction);
+            document.removeEventListener('keydown', playOnInteraction);
+          };
+          document.addEventListener('click', playOnInteraction);
+          document.addEventListener('keydown', playOnInteraction);
+        });
+        
+      } catch (error) {
+        console.warn('Failed to load game audio:', error);
+      }
+    };
+
+    // Start game audio sequence
+    playGameAudio();
 
     // Initialize Three.js scene
     const scene = new THREE.Scene();
@@ -897,7 +966,7 @@ export function WizardGame({ username, onExitGame }: WizardGameProps) {
           }
         } catch (error) {
           // This is expected in React StrictMode - just log it
-          console.log("Canvas already removed by React");
+          console.log("Canvas already removed by React:", error);
         }
       }
 
@@ -1763,6 +1832,34 @@ export function WizardGame({ username, onExitGame }: WizardGameProps) {
   // Create projectile function
   function createProjectile(gameState: GameState, projectile: Projectile) {
     let projectileGeometry, projectileMaterial;
+
+    // Play laser sound when laser projectile is created
+    if (projectile.type === "laser") {
+      try {
+        const laserAudio = new Audio('/laser.mp3');
+        laserAudio.volume = 0.4; // Set volume to 40%
+        laserAudio.play().catch((error) => {
+          console.warn('Failed to play laser sound:', error);
+        });
+        console.log('🔫 Playing laser sound effect');
+      } catch (error) {
+        console.warn('Failed to load laser sound:', error);
+      }
+    }
+
+    // Play fireball sound when fireball projectile is created
+    if (projectile.type === "fireball") {
+      try {
+        const fireballAudio = new Audio('/fireball.mp3');
+        fireballAudio.volume = 0.5; // Set volume to 50%
+        fireballAudio.play().catch((error) => {
+          console.warn('Failed to play fireball sound:', error);
+        });
+        console.log('🔥 Playing fireball sound effect');
+      } catch (error) {
+        console.warn('Failed to load fireball sound:', error);
+      }
+    }
 
     // Choose geometry/material based on projectile type
     if (projectile.type === "fireball") {
